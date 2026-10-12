@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import path from 'path';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { createWriteStream, existsSync, mkdirSync, writeFileSync } from 'fs';
 import { z } from 'zod';
 import { downloadQueue } from '../../queue/queue.js';
 import { historyService } from '../../history.js';
@@ -9,7 +9,6 @@ import { migrationService } from '../../migration.js';
 import qobuzApi from '../../../api/qobuz.js';
 import { logger } from '../../../utils/logger.js';
 import { CONFIG, normalizeDownloadQuality } from '../../../config.js';
-import { isPathWithinManagedRoots } from '../../../utils/paths.js';
 import {
     contentIdSchema,
     downloadActionsService,
@@ -22,6 +21,7 @@ import {
     QueueRequestError,
     queueStatusFilterSchema
 } from '../../download-actions.js';
+import { downloadTrackLyrics, getTrackLyrics, managedLrcPath } from '../../lyrics-actions.js';
 import { parseBody, parseParams, parseQuery, routeErrorHandler } from './route-utils.js';
 
 const router = Router();
@@ -134,18 +134,7 @@ const albumZipBody = z.object({
 const hasAnyQuery = (req: Request, keys: string[]): boolean =>
     keys.some((key) => req.query[key] !== undefined);
 
-/** `<dir>/<name>.lrc` next to an audio file, for any extension (or none). */
-export function lrcPathFor(audioPath: string): string {
-    const { dir, name } = path.parse(audioPath);
-    return path.join(dir, `${name}.lrc`);
-}
-
-/** The `.lrc` sidecar for a history entry, or null when it would land outside the library. */
-function managedLrcPath(audioPath: unknown): string | null {
-    if (typeof audioPath !== 'string' || !audioPath.trim()) return null;
-    const lrcPath = lrcPathFor(audioPath);
-    return isPathWithinManagedRoots(lrcPath) ? lrcPath : null;
-}
+export { lrcPathFor } from '../../lyrics-actions.js';
 
 /**
  * A CSV cell that starts with =, +, -, @, tab or CR is run as a formula by
@@ -434,36 +423,7 @@ router.delete('/history', (_req: Request, res: Response) => {
 
 router.get('/lyrics/:id', async (req: Request, res: Response) => {
     const { id } = parseParams(trackIdParams, req.params);
-    const { downloadService } = await import('../../queue-processor.js');
-
-    const historyItem = historyService.get(id);
-    const lrcPath = historyItem ? managedLrcPath(historyItem.filename) : null;
-    if (lrcPath && existsSync(lrcPath)) {
-        const content = readFileSync(lrcPath, 'utf8');
-        res.json({
-            success: true,
-            source: 'Local File',
-            syncedLyrics: content,
-            parsedLyrics: downloadService.lyricsProvider.parseLrc(content)
-        });
-        return;
-    }
-
-    const trackRes = await api.getTrack(id);
-    if (!trackRes.success || !trackRes.data) {
-        res.status(404).json({ error: 'Track not found', code: 'NOT_FOUND' });
-        return;
-    }
-
-    const track = trackRes.data;
-    const lyrics = await downloadService.lyricsProvider.getLyrics(
-        track.title,
-        track.performer?.name || track.artist?.name || 'Unknown',
-        track.album?.title,
-        track.duration
-    );
-
-    res.json(lyrics);
+    res.json(await getTrackLyrics(id));
 });
 
 router.post('/lyrics/:id/save', (req: Request, res: Response) => {
@@ -495,35 +455,8 @@ router.post('/lyrics/:id/save', (req: Request, res: Response) => {
 });
 
 router.post('/lyrics/download', async (req: Request, res: Response) => {
-    const { trackId: rawTrackId } = parseBody(lyricsDownloadBody, req.body);
-    const trackId = String(rawTrackId);
-
-    const { downloadService } = await import('../../queue-processor.js');
-    const trackRes = await api.getTrack(trackId);
-    if (!trackRes.success || !trackRes.data) {
-        res.status(404).json({ error: 'Track not found', code: 'NOT_FOUND' });
-        return;
-    }
-
-    const track = trackRes.data;
-    const lyrics = await downloadService.lyricsProvider.getLyrics(
-        track.title,
-        track.performer?.name || track.artist?.name || 'Unknown',
-        track.album?.title,
-        track.duration
-    );
-
-    if (!lyrics.success) {
-        res.status(404).json({ error: 'Lyrics not found', code: 'NOT_FOUND' });
-        return;
-    }
-
-    const historyItem = historyService.get(trackId);
-    const text = lyrics.syncedLyrics || lyrics.plainLyrics;
-    const lrcPath = historyItem ? managedLrcPath(historyItem.filename) : null;
-    if (lrcPath && typeof text === 'string' && text && existsSync(path.dirname(lrcPath))) {
-        writeFileSync(lrcPath, text, 'utf8');
-    }
+    const { trackId } = parseBody(lyricsDownloadBody, req.body);
+    const { lyrics } = await downloadTrackLyrics(String(trackId));
     res.json(lyrics);
 });
 
