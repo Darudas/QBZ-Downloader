@@ -23,6 +23,15 @@ const SENSITIVE_KEYS = [
  */
 const ENV_ISOLATED_KEYS = ['MCP_TOKEN_HASH', 'MCP_TOKEN_CREATED_AT'];
 
+/**
+ * Settings are mirrored into process.env so code that only knows the env name
+ * sees the current value. Secrets are not: child processes (ffmpeg, fpcalc)
+ * inherit the environment, and a mirrored copy would outlive a system reset
+ * that wiped the secret from the database (CONFIG falls back to process.env).
+ */
+const shouldMirrorToEnv = (key: string): boolean =>
+    !ENV_ISOLATED_KEYS.includes(key) && !SENSITIVE_KEYS.includes(key);
+
 export const KNOWN_SETTING_KEYS = [
     'QOBUZ_APP_ID',
     'QOBUZ_APP_SECRET',
@@ -74,7 +83,10 @@ export const KNOWN_SETTING_KEYS = [
     'MCP_ENABLED',
     'MCP_TOKEN_HASH',
     'MCP_TOKEN_CREATED_AT',
-    'MCP_PERMISSIONS'
+    'MCP_PERMISSIONS',
+    'FAVORITES_AUTO_DOWNLOAD',
+    'FAVORITES_AUTO_DOWNLOAD_TYPES',
+    'FAVORITES_SYNC_INTERVAL_HOURS'
 ] as const;
 
 export type KnownSettingKey = (typeof KNOWN_SETTING_KEYS)[number];
@@ -243,7 +255,7 @@ export class SettingsService {
             ).run(key, valueToStore);
 
             this.cache.set(key, { value, timestamp: Date.now() });
-            if (!ENV_ISOLATED_KEYS.includes(key)) process.env[key] = value;
+            if (shouldMirrorToEnv(key)) process.env[key] = value;
             eventBus.emit(EVENTS.SETTINGS.UPDATED, { keys: [key] });
         } catch (error: unknown) {
             logger.error(`Failed to save setting ${key}: ${(error as Error).message}`, 'SETTINGS');
@@ -270,7 +282,7 @@ export class SettingsService {
                     const valueToStore = SENSITIVE_KEYS.includes(key) ? encryptionService.encryptSync(value) : value;
                     stmt.run(key, valueToStore);
                     this.cache.set(key, { value, timestamp: Date.now() });
-                    if (!ENV_ISOLATED_KEYS.includes(key)) process.env[key] = value;
+                    if (shouldMirrorToEnv(key)) process.env[key] = value;
                 }
             });
 
