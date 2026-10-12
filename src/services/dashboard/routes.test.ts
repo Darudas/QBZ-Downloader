@@ -431,6 +431,23 @@ describe('Dashboard API Routes', () => {
             expect(res.body.success).toBe(true);
         });
 
+        it('does not store the Electron port when saving in desktop mode', async () => {
+            const previous = process.env.QBZ_DESKTOP;
+            process.env.QBZ_DESKTOP = '1';
+            try {
+                const res = await request(app)
+                    .post('/api/settings/update')
+                    .send({ dashboard_port: '3210', ui_theme: 'light' });
+                expect(res.status).toBe(200);
+                const written = vi.mocked(settingsService.setMany).mock.calls.at(-1)?.[0] as Record<string, string>;
+                expect(written).not.toHaveProperty('DASHBOARD_PORT');
+                expect(written).toHaveProperty('UI_THEME', 'light');
+            } finally {
+                if (previous === undefined) delete process.env.QBZ_DESKTOP;
+                else process.env.QBZ_DESKTOP = previous;
+            }
+        });
+
         it('should accept token alias from desktop onboarding', async () => {
             const res = await request(app)
                 .post('/api/settings/update')

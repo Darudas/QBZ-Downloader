@@ -294,6 +294,14 @@ router.post('/settings/update', (req: Request, res: Response) => {
     // read-only or invalid field; nothing is written in that case.
     const updates = parseSettingsUpdate(req.body ?? {});
 
+    // In desktop mode the port shown in the form is Electron's own loopback
+    // port for this run (see DESKTOP_RUNTIME_KEYS in settings.ts). The form
+    // sends it back on every save; storing it would make a later headless
+    // start listen on that port instead of the configured one.
+    if (process.env.QBZ_DESKTOP === '1') {
+        delete updates.DASHBOARD_PORT;
+    }
+
     if (Object.keys(updates).length === 0) {
         res.status(400).json({ error: 'No valid settings provided', code: 'VALIDATION_ERROR' });
         return;

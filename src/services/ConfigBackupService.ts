@@ -95,6 +95,13 @@ export class ConfigBackupService {
                 )
             )
         );
+        // An import never removes the dashboard password: on a server that is
+        // reachable from the network that would leave it open (the settings
+        // route refuses the same change). A backup can still set a new one.
+        if (allowedSettings.DASHBOARD_PASSWORD === '') {
+            delete allowedSettings.DASHBOARD_PASSWORD;
+            skipped.push('DASHBOARD_PASSWORD');
+        }
         settingsService.setMany(allowedSettings);
 
         for (const playlist of watchedPlaylists) {

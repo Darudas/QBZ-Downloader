@@ -9,7 +9,7 @@ vi.mock('./settings.js', () => ({
         getAll: vi.fn(),
         setMany: vi.fn()
     },
-    KNOWN_SETTING_KEYS: ['QOBUZ_APP_ID', 'UI_LANGUAGE', 'FOLDER_TEMPLATE', 'MCP_TOKEN_HASH']
+    KNOWN_SETTING_KEYS: ['QOBUZ_APP_ID', 'UI_LANGUAGE', 'FOLDER_TEMPLATE', 'MCP_TOKEN_HASH', 'DASHBOARD_PASSWORD']
 }));
 
 vi.mock('./database/index.js', () => ({
@@ -112,6 +112,16 @@ describe('ConfigBackupService', () => {
         const result = await service.importEncrypted(backup, 'strong-passphrase');
 
         expect(result.skippedSettings).toEqual(['FOLDER_TEMPLATE']);
+        expect(settingsService.setMany).toHaveBeenCalledWith({ UI_LANGUAGE: 'id' });
+    });
+
+    it('never removes the dashboard password on import', async () => {
+        vi.mocked(settingsService.getAll).mockReturnValue({ UI_LANGUAGE: 'id', DASHBOARD_PASSWORD: '' });
+        const backup = service.exportEncrypted('strong-passphrase');
+
+        const result = await service.importEncrypted(backup, 'strong-passphrase');
+
+        expect(result.skippedSettings).toContain('DASHBOARD_PASSWORD');
         expect(settingsService.setMany).toHaveBeenCalledWith({ UI_LANGUAGE: 'id' });
     });
 
