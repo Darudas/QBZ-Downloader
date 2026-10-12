@@ -154,6 +154,19 @@ describe('library-actions', () => {
             expect(deleteLibraryFile({ libraryFileId: row.id }).deleted).toBe(true);
         });
 
+        it('finds rows stored with a relative path (scanner) and an absolute one (download)', () => {
+            fs.writeFileSync(file('mixed.flac'), 'x');
+            const relative = path.relative(process.cwd(), file('mixed.flac'));
+            databaseService.addLibraryFile({ file_path: relative });
+            databaseService.addTrack({ id: '77', title: 'Mixed', file_path: file('mixed.flac') });
+
+            const result = deleteLibraryFile({ filePath: file('mixed.flac') });
+
+            expect(result.removedRows).toEqual({ libraryFiles: 1, tracks: 1 });
+            expect(databaseService.getLibraryFileByPath(relative)).toBeUndefined();
+            expect(databaseService.getTrack('77')).toBeUndefined();
+        });
+
         it('refuses files outside the library or not in the index', () => {
             expect(() => deleteLibraryFile({ filePath: '/etc/hosts' })).toThrow(/outside/);
             fs.writeFileSync(file('cover.jpg'), 'x');

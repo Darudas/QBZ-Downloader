@@ -61,7 +61,7 @@ describe('POST /api/library/upgrade', () => {
     it('rejects files outside the managed roots or not indexed', async () => {
         mocks.isPathWithinManagedRoots.mockReturnValueOnce(false);
         expect((await request(app).post('/api/library/upgrade').send({ filePath: '/etc/passwd', trackId: '123' })).status).toBe(403);
-        mocks.getLibraryFileByPath.mockReturnValueOnce(undefined);
+        mocks.getLibraryFileByPath.mockReturnValue(undefined);
         expect((await request(app).post('/api/library/upgrade').send({ filePath: '/music/x.flac', trackId: '123' })).status).toBe(404);
         expect(mocks.add).not.toHaveBeenCalled();
     });

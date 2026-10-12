@@ -43,18 +43,47 @@ const isRegularFile = (filePath: string): boolean => {
     }
 };
 
+/**
+ * The ways one file can be stored in the index: downloads record absolute
+ * paths, while the scanner keeps the configured form, which is relative with
+ * the default `./downloads`. Lookups and updates must try each of them.
+ */
+export function pathVariants(filePath: string): string[] {
+    const absolute = path.resolve(filePath);
+    const relative = path.relative(process.cwd(), absolute);
+    return [...new Set([filePath, absolute, relative, `.${path.sep}${relative}`])];
+}
+
+const findLibraryFile = (filePath: string) =>
+    pathVariants(filePath)
+        .map((variant) => databaseService.getLibraryFileByPath(variant))
+        .find(Boolean);
+
+const findTrack = (filePath: string) =>
+    pathVariants(filePath)
+        .map((variant) => databaseService.getTrackByPath(variant))
+        .find(Boolean);
+
 /** Drops the index rows of a file that is gone (library_files, tracks, open duplicates, history). */
 function forgetFile(filePath: string): { libraryFiles: number; tracks: number } {
-    const libraryFiles = databaseService.getLibraryFileByPath(filePath) ? 1 : 0;
-    databaseService.deleteLibraryFileByPath(filePath);
-    // Exact match only: deleteTrackByPath falls back to a fuzzy suffix match,
-    // which must not remove some other copy's row.
-    const tracks = databaseService.getTrackByPath(filePath) ? 1 : 0;
-    if (tracks) databaseService.deleteTrackByPath(filePath);
-    databaseService
+    let libraryFiles = 0;
+    let tracks = 0;
+    const resolveDuplicates = databaseService
         .getDb()
-        .prepare('UPDATE duplicates SET resolved = 1 WHERE file_path_1 = ? OR file_path_2 = ?')
-        .run(filePath, filePath);
+        .prepare('UPDATE duplicates SET resolved = 1 WHERE file_path_1 = ? OR file_path_2 = ?');
+    for (const variant of pathVariants(filePath)) {
+        if (databaseService.getLibraryFileByPath(variant)) {
+            libraryFiles++;
+            databaseService.deleteLibraryFileByPath(variant);
+        }
+        // Exact match only: deleteTrackByPath falls back to a fuzzy suffix
+        // match, which must not remove some other copy's row.
+        if (databaseService.getTrackByPath(variant)) {
+            tracks++;
+            databaseService.deleteTrackByPath(variant);
+        }
+        resolveDuplicates.run(variant, variant);
+    }
     historyService.cleanup();
     return { libraryFiles, tracks };
 }
@@ -92,7 +121,7 @@ export function queueUpgrade(input: {
         throw new QueueRequestError('File is outside the managed library folders', 403, 'FORBIDDEN');
     }
 
-    const libraryFile = databaseService.getLibraryFileByPath(filePath);
+    const libraryFile = findLibraryFile(filePath);
     if (!libraryFile) throw new QueueRequestError('File is not in the scanned library', 404, 'NOT_FOUND');
 
     let candidates: Array<{ trackId?: unknown; quality?: unknown; title?: unknown; album?: unknown }> = [];
@@ -156,7 +185,7 @@ interface DuplicateSide {
 }
 
 function duplicateSide(filePath: string): DuplicateSide {
-    const row = databaseService.getLibraryFileByPath(filePath) as { quality?: number; file_size?: number } | undefined;
+    const row = findLibraryFile(filePath) as { quality?: number; file_size?: number } | undefined;
     const exists = isRegularFile(filePath);
     let size = Number(row?.file_size ?? 0);
     if (!size && exists) size = fs.statSync(filePath).size;
@@ -275,7 +304,7 @@ export function deleteLibraryFile(input: { filePath?: unknown; libraryFileId?: u
     }
     const target = assertManagedPath(filePath);
 
-    const known = Boolean(databaseService.getLibraryFileByPath(target)) || Boolean(databaseService.getTrackByPath(target));
+    const known = Boolean(findLibraryFile(target)) || Boolean(findTrack(target));
     if (!known) throw new NotFoundError('File is not in the library index');
 
     let deleted = false;
@@ -353,25 +382,27 @@ export async function editTrackMetadata(filePath: unknown, fields: unknown): Pro
     await MetadataService.runExclusive(() => patchTags(target, changes));
 
     const stat = fs.statSync(target);
-    databaseService.updateLibraryFileTags(target, {
-        title: changes.title,
-        artist: changes.artist,
-        album_artist: changes.albumArtist,
-        album: changes.album,
-        file_size: stat.size,
-        file_mtime_ms: stat.mtimeMs
-    });
     const year = changes.year ? Number.parseInt(changes.year.slice(0, 4), 10) : undefined;
-    databaseService.updateTrackTagsByPath(target, {
-        title: changes.title,
-        artist: changes.artist,
-        album_artist: changes.albumArtist,
-        album: changes.album,
-        genre: changes.genre,
-        year: Number.isFinite(year) ? year : undefined,
-        isrc: changes.isrc,
-        label: changes.label
-    });
+    for (const variant of pathVariants(target)) {
+        databaseService.updateLibraryFileTags(variant, {
+            title: changes.title,
+            artist: changes.artist,
+            album_artist: changes.albumArtist,
+            album: changes.album,
+            file_size: stat.size,
+            file_mtime_ms: stat.mtimeMs
+        });
+        databaseService.updateTrackTagsByPath(variant, {
+            title: changes.title,
+            artist: changes.artist,
+            album_artist: changes.albumArtist,
+            album: changes.album,
+            genre: changes.genre,
+            year: Number.isFinite(year) ? year : undefined,
+            isrc: changes.isrc,
+            label: changes.label
+        });
+    }
 
     logger.info(`Edited ${Object.keys(changes).length} tag(s) of ${path.basename(target)}`, 'LIBRARY');
     return { filePath: target, updated: Object.keys(changes) };
