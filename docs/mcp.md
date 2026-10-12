@@ -42,11 +42,41 @@ Tools are grouped. A tool from a disabled group is not offered to the AI at all.
 
 | Group | Tools | Default |
 |---|---|---|
-| `read` | `get_status`, `get_account_info`, `search_catalog`, `resolve_qobuz_url`, `get_album`, `get_track`, `get_artist`, `get_artist_releases`, `get_similar_artists`, `get_playlist`, `get_label`, `get_featured_albums`, `get_featured_playlists`, `list_genres`, `list_favorites`, `check_favorites`, `list_my_playlists`, `list_purchases`, `get_queue`, `get_download_history`, `get_scan_status`, `check_in_library`, `search_local_library`, `list_duplicates`, `list_upgrade_candidates`, `list_missing_metadata` | always on |
+| `read` | `get_status`, `get_account_info`, `search_catalog`, `resolve_qobuz_url`, `get_album`, `get_track`, `get_artist`, `get_artist_releases`, `get_similar_artists`, `get_playlist`, `get_label`, `get_featured_albums`, `get_featured_playlists`, `list_genres`, `get_lyrics`, `list_favorites`, `check_favorites`, `list_my_playlists`, `list_purchases`, `get_queue`, `get_queue_item`, `get_download_history`, `get_scan_status`, `check_in_library`, `search_local_library`, `list_duplicates`, `list_upgrade_candidates`, `list_missing_metadata`, `list_watched_playlists`, `list_smart_playlists`, `get_smart_playlist_tracks`, `list_notifications` | always on |
 | `library` | `add_favorites`, `remove_favorites`, `create_playlist`, `update_playlist`, `add_tracks_to_playlist`, `remove_tracks_from_playlist`, `follow_playlist`, `unfollow_playlist` | on |
-| `download` | `download`, `download_urls`, `download_favorites`, `control_queue`, `cancel_queue_item`, `retry_queue_item`, `set_queue_priority` | on |
-| `manage` | `start_library_scan`, `watch_playlist`, `sync_watched_playlists`, `queue_upgrade` (replaces the old file after the better one is downloaded), `retag_file_from_qobuz` (rewrites a file's tags and cover from a Qobuz track) | on |
-| `destructive` | `delete_playlist`, `clear_pending_queue`, `resolve_duplicate` (deletes the worse file of a pair; refuses files outside the library folders). Each also needs `confirm: true` | **off** |
+| `download` | `download`, `download_urls`, `download_favorites`, `download_purchases`, `control_queue`, `cancel_queue_item`, `retry_queue_item`, `set_queue_priority`, `download_lyrics` (saves an `.lrc` next to a downloaded track) | on |
+| `manage` | `start_library_scan`, `watch_playlist`, `unwatch_playlist`, `sync_watched_playlists`, `sync_favorites_now`, `create_smart_playlist`, `delete_smart_playlist`, `mark_notifications_read`, `queue_upgrade` (replaces the old file after the better one is downloaded), `retag_file_from_qobuz` (rewrites a file's tags and cover from a Qobuz track) | on |
+| `destructive` | `delete_playlist`, `clear_pending_queue`, `clear_download_history`, `remove_history_entry` (both keep the files on disk), `resolve_duplicate` (deletes the worse file of a pair; refuses files outside the library folders). Each also needs `confirm: true` | **off** |
+
+### Resources and prompts
+
+Resources (read-only, always available):
+
+| URI | Content |
+|---|---|
+| `qbz://status` | Same JSON as `get_status`: version, credentials state, queue statistics, scan state, favorites auto-download schedule |
+| `qbz://queue` | Running and pending downloads (up to 100) with queue statistics |
+
+Prompts are ready-made workflows the client can offer as commands. A prompt is only listed when the
+tools it uses are enabled.
+
+| Prompt | Arguments | Needs |
+|---|---|---|
+| `download_discography` | `artist` | `download` |
+| `sync_favorites` | – | `download` |
+| `find_hires_upgrades` | – | `manage` |
+| `clean_duplicates` | – | always; it only reports unless `destructive` is enabled |
+| `build_playlist` | `theme` | `library` |
+
+### Favorites auto-download
+
+With the settings `FAVORITES_AUTO_DOWNLOAD=true`, `FAVORITES_AUTO_DOWNLOAD_TYPES` (`albums`, `tracks` or
+both) and `FAVORITES_SYNC_INTERVAL_HOURS` (1–168, default 6), the app checks your Qobuz favorites on that
+interval and queues the ones added since the last check. The first check for an account and type, and
+the first check after the setting is switched on, only records the current favorites as a baseline and
+downloads nothing; use `download_favorites` (or "Download all missing" in the dashboard) for the existing
+list. `sync_favorites_now` (and `POST /api/favorites/sync`) runs a check immediately, even when the
+schedule is off; `GET /api/favorites/sync` shows the last and next check.
 
 To change the enabled groups (`read` is always on):
 
@@ -103,6 +133,8 @@ claude.ai web connectors are not supported. They need a public HTTPS endpoint wi
 - "Pause the queue. Which downloads failed? Retry them."
 - "Do I already have Kind of Blue? If only partly, download the missing tracks."
 - "Scan my library, show me the duplicates and the files that can be upgraded to Hi-Res."
+- "Download everything I bought on Qobuz that I don't have yet."
+- "Make a smart playlist of my Hi-Res jazz and list its tracks."
 
 ## Security notes
 
@@ -110,7 +142,12 @@ claude.ai web connectors are not supported. They need a public HTTPS endpoint wi
   `process.env` and is compared in constant time.
 - `/mcp` has its own rate limit (600 requests per 5 min) and an auth-failure limit (20 per 15 min). It
   rejects requests carrying a foreign `Origin` and limits bodies to 1 MB.
+- When the server listens on a loopback address, `/mcp` only accepts the `Host` values `localhost`,
+  `127.0.0.1` and `[::1]` with the server's port (protection against DNS rebinding). A reverse proxy in
+  front of a loopback-bound instance must forward one of these, for example
+  `proxy_set_header Host 127.0.0.1:3000;` in nginx.
 - Every tool call is logged by name (`MCP tool <name> ok|error`), never with its arguments.
 - Error messages are sanitized: Qobuz tokens or request internals never reach the AI.
-- Text that comes from Qobuz (titles, descriptions) is data. The server instructions tell the AI not to
-  follow instructions found in it.
+- Text that comes from Qobuz (titles, descriptions) or the lyrics providers is data. The server
+  instructions tell the AI not to follow instructions found in it; notifications and lyrics are
+  length-capped.

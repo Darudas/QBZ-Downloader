@@ -11,8 +11,9 @@ This document is the working plan for two connected features:
 It also records security problems found in the existing code that had to be fixed before an AI is
 allowed to control the app.
 
-> **Status (current branch):** the MCP server (B2, core tool set) is implemented, tested and documented
-> in [`docs/mcp.md`](mcp.md); phase A is partly done. The Qobuz API layer, the Qobuz library service and
+> **Status (current branch):** the MCP server (B2: 64 tools, resources, prompts, Host check, bridge
+> end-to-end test) and the favorites auto-download are implemented, tested and documented in
+> [`docs/mcp.md`](mcp.md); phase A is partly done. The Qobuz API layer, the Qobuz library service and
 > the queue/download safety work are implemented and tested; everything else below is planned. See
 > [Status](#status) for the exact list.
 
@@ -244,28 +245,61 @@ Conventions for every tool:
 - `normalizeDownloadQuality` is a strict whitelist (`ALLOWED_QUALITIES` = 5, 6, 7, 27; `max`/`min`
   aliases). Anything else falls back to the default instead of reaching `getFileUrl`.
 
-**B2: MCP server (core done)**
-- `src/mcp/server.ts`: 49 tools across the groups read/library/download/manage/destructive,
+**B2: MCP server (done except the items below)**
+- `src/mcp/server.ts`: 64 tools across the groups read/library/download/manage/destructive,
   registered per request according to `MCP_PERMISSIONS`. Destructive tools need `confirm: true`. The
   handler wrapper sanitizes errors and audit-logs calls by name.
-- `src/mcp/http.ts`: the `/mcp` endpoint, with a rate limit, a 404 while disabled, a foreign-Origin
-  reject, bearer auth plus an auth-failure limiter, and a 1 MB parser. It also holds the admin routes
-  `GET /api/mcp/status`, `POST /api/mcp/config`, `POST`/`DELETE /api/mcp/token` (behind the dashboard
-  password).
+  - Added after the core set: `get_queue_item`, `get_lyrics`, `list_notifications`,
+    `list_watched_playlists`, `list_smart_playlists`, `get_smart_playlist_tracks` (read);
+    `download_purchases`, `download_lyrics` (download); `unwatch_playlist`, `sync_favorites_now`,
+    `create_smart_playlist`, `delete_smart_playlist`, `mark_notifications_read` (manage);
+    `clear_download_history`, `remove_history_entry` (destructive).
+- `src/mcp/resources.ts`: the resources `qbz://status` and `qbz://queue`, and the prompts
+  `download_discography(artist)`, `find_hires_upgrades`, `clean_duplicates`, `sync_favorites`,
+  `build_playlist(theme)`. A prompt is registered only when the groups of the tools it uses are enabled.
+- `src/mcp/http.ts`: the `/mcp` endpoint, with a rate limit, a loopback Host check, a 404 while disabled,
+  a foreign-Origin reject, bearer auth plus an auth-failure limiter, and a 1 MB parser. It also holds the
+  admin routes `GET /api/mcp/status`, `POST /api/mcp/config`, `POST`/`DELETE /api/mcp/token` (behind the
+  dashboard password).
+  - Host check: when the listening socket is bound to a loopback address, only `localhost`, `127.0.0.1`
+    and `[::1]` with the bound port are accepted. The dashboard's own rebinding guard did not cover this:
+    it is skipped when a dashboard password is set and does not compare the port.
 - `src/mcp/token.ts`: the token is hashed (`MCP_TOKEN_HASH`) and compared in constant time. The
   `QBZ_MCP_TOKEN` env override is supported. The MCP keys are registered in settings, and the hash is
   never mirrored to or imported from `process.env`.
-- `src/mcp/bridge.ts` with `"bin": {"qbz-mcp": "dist/mcp/bridge.js"}`.
-- Tests (`src/mcp/mcp.test.ts`) use a real MCP client over HTTP and cover the 404, 401 and foreign-Origin
-  responses, tool gating per group, `confirm`, and tool calls.
+- `src/mcp/bridge.ts` with `"bin": {"qbz-mcp": "dist/mcp/bridge.js"}`. Fixed: the SDK stdio transport
+  closes itself when stdin ends, so answers to requests still in flight were dropped (for example
+  `echo '{…}' | qbz-mcp`). The bridge now writes stdout itself and exits once in-flight requests are
+  answered (30 s backstop).
+- Tests (`src/mcp/mcp.test.ts`) use a real MCP client over HTTP and cover the 404, 401, foreign-Origin and
+  Host responses, tool gating per group, `confirm`, tool calls, resources and prompts. An end-to-end test
+  starts the bridge (`node --experimental-strip-types src/mcp/bridge.ts`) against the test server, speaks
+  JSON-RPC over stdio (initialize, tools/list, tools/call) and checks that stdout carries only JSON-RPC.
 - **Still open in B2:**
-  - tools that depend on A3/B1 services: `check_in_library`, `search_local_library`, duplicates,
-    upgrades, metadata edits, smart playlists, safe settings read/write, notifications,
-    `download_purchases`, `download_lyrics`;
-  - resources and prompts;
-  - a Host-header check for loopback binds;
-  - a bridge end-to-end test.
+  - `get_settings`/`update_settings` (being added together with `settings-schema.ts`);
+  - `delete_library_file`: skipped until `libraryActionsService.deleteLibraryFile` exists with a
+    containment check; `edit_track_metadata`, `get_library_stats`, `abort_library_scan` are not
+    implemented yet.
 - **UI:** the MCP section in Settings is done (`McpSettingsSection.tsx`, en/de strings).
+
+**Favorites auto-download (B1, done)**
+- `src/services/favorites-sync.ts` (`favoritesSyncService`), started with the app in `src/index.ts`.
+  While `FAVORITES_AUTO_DOWNLOAD` is on it checks the favorite ids every `FAVORITES_SYNC_INTERVAL_HOURS`
+  (1–168, default 6; the schedule survives restarts) and queues favorites of the types in
+  `FAVORITES_AUTO_DOWNLOAD_TYPES` that are new since the last check. Checks are skipped without Qobuz
+  credentials; settings and credential changes reschedule (`EVENTS.SETTINGS.UPDATED`).
+- Baseline: the first check per Qobuz account and type, and the first check after the setting is switched
+  on, only records the current favorites and downloads nothing. Ids that fail to queue stay unknown and
+  are retried on the next check.
+- Known ids are stored in two tables created on first use (`favorites_sync_state`,
+  `favorites_sync_known`), keyed by Qobuz user id, not in settings: the list can hold thousands of ids,
+  and settings are cached, mirrored into `process.env` and exported with the config.
+- The settings are read through `readFavoritesSyncSettings()` (same shape as the planned
+  `CONFIG.favorites`); switch to the getter once it exists.
+- REST: `GET /api/favorites/sync` (status), `POST /api/favorites/sync` (check now),
+  `POST /api/purchases/download` (`downloadPurchases`, shared with the MCP tool, in
+  `src/services/favorites-download.ts`).
+- Lyrics lookups for REST and MCP live in `src/services/lyrics-actions.ts`.
 
 **Verification:** `npx tsc --noEmit` passes, lint has 0 errors, 384 backend tests pass (272 before), and
 82 client tests pass. The client typecheck passes.
@@ -341,8 +375,9 @@ Conventions for every tool:
   - discovery: `/api/discover/albums?type=&genre_id=`, `/api/discover/playlists`;
   - labels and artists: `/api/label/:id`, `/api/artist/:id/similar`, `/api/artist/:id/releases`;
   - `/api/account`.
-- `downloadActionsService.downloadFavorites({type, onlyMissing, quality})` and `downloadPurchases(...)`.
-- `favoritesSyncService` with optional auto-download of new favorites on an interval, plus `syncNow()`.
+- ~~`downloadFavorites` and `downloadPurchases`~~ **done** (`src/services/favorites-download.ts`).
+- ~~`favoritesSyncService` with optional auto-download of new favorites on an interval, plus
+  `syncNow()`~~ **done** (see Status).
 - Socket broadcasts for `favorites:updated` and `playlists:updated`, driven by
   `EVENTS.QOBUZ_LIBRARY.*` on the event bus.
 
