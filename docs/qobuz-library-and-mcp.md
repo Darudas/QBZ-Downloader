@@ -235,6 +235,14 @@ Conventions for every tool:
 - Spotify URLs no longer become bogus queue items.
 - Batches survive deduplicated adds and no longer finalize early because of per-retry failure events.
 
+**Follow-ups done after phase A was stopped**
+- `POST /api/library/upgrade`: queues a Hi-Res upgrade for a scanned library file. The request may only
+  name an indexed file inside the managed roots and one of the upgrade candidates the scanner recorded
+  for it; the upgrade metadata is built server-side. The Library view's upgrade button uses it again
+  (it was broken by the queue fix above).
+- `normalizeDownloadQuality` is a strict whitelist (`ALLOWED_QUALITIES` = 5, 6, 7, 27; `max`/`min`
+  aliases). Anything else falls back to the default instead of reaching `getFileUrl`.
+
 **Verification:** `npx tsc --noEmit` passes, lint has 0 errors, 384 backend tests pass (272 before), and
 82 client tests pass. The client typecheck passes.
 
@@ -251,7 +259,6 @@ Conventions for every tool:
 
 *Config and settings*
 - `src/config.ts`:
-  - Make `normalizeDownloadQuality` a strict whitelist (it accepts any number today).
   - Add the `CONFIG.mcp` and `CONFIG.favorites` getters.
 - `src/services/settings.ts`:
   - Register the new keys.
@@ -298,10 +305,8 @@ Conventions for every tool:
   `searchLocalLibrary`.
 - `src/services/library-actions.ts`: `queueUpgrade`, which builds the upgrade metadata server-side,
   plus `editTrackMetadata`, `deleteLibraryFile` and `resolveDuplicate`.
-- Routes: `POST /api/library/upgrade`, `GET /api/library/search`, `GET /api/library/lookup`.
-- **The client's "upgrade" button** (`LibraryView.tsx`) still sends `metadata.isUpgrade` through
-  `/api/queue/add`. The server now ignores that, so the button must be switched to
-  `POST /api/library/upgrade` once that route exists.
+- Routes: `GET /api/library/search`, `GET /api/library/lookup`. (`POST /api/library/upgrade` is done;
+  move its logic into `libraryActionsService.queueUpgrade` so MCP can reuse it.)
 
 **B1: REST and services for the library features**
 - Routers:

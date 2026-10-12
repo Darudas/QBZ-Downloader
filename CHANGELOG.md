@@ -16,6 +16,8 @@ All notable changes to this project will be documented in this file.
   artist/label), `POST /api/download/urls`, queue item retry/priority/details, retry all failed,
   clear pending, `DELETE /api/history/:id` and paged history search. Watched playlists can now be
   edited and synced on demand.
+- `POST /api/library/upgrade` queues a Hi-Res upgrade for a scanned file with server-built upgrade
+  metadata; the Library view's upgrade button uses it.
 - MCP SDK v2 dependencies for the upcoming `/mcp` endpoint and the `qbz-mcp` stdio bridge.
 
 ### Fixed
@@ -24,6 +26,7 @@ All notable changes to this project will be documented in this file.
   through, and a completed "upgrade" then deleted `metadata.oldFilePath`. Caller metadata is now
   dropped, and an upgrade only deletes a file that is inside the library roots, indexed in
   `library_files`, and not the new file.
+- **Invalid quality values** (any number) were passed to Qobuz; only 5, 6, 7 and 27 are accepted now.
 - **Artist downloads did nothing**: they read the wrong response shape, were capped at 50 albums,
   could deadlock on the concurrency limiter, and ran inside the HTTP request. Artists (and now labels)
   enqueue one album item per release, across all pages.

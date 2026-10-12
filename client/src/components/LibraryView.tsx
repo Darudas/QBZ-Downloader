@@ -390,19 +390,13 @@ export const LibraryView: React.FC = () => {
         const queueKey = `${track.filePath}:${candidate.trackId}`;
         setUpgradingIds(prev => new Set(prev).add(queueKey));
         try {
-            const res = await smartFetch('/api/queue/add', {
+            const res = await smartFetch('/api/library/upgrade', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    type: 'track',
-                    id: candidate.trackId,
-                    quality: candidate.quality,
-                    metadata: {
-                        isUpgrade: true,
-                        oldFilePath: track.filePath,
-                        selectedUpgradeTitle: candidate.title,
-                        selectedUpgradeAlbum: candidate.album
-                    }
+                    filePath: track.filePath,
+                    trackId: candidate.trackId,
+                    quality: candidate.quality
                 })
             });
             if (res && res.ok) {
