@@ -40,6 +40,12 @@ export function isAllowedLoopbackHost(hostHeader: string | undefined, port: numb
     return (match[2] === undefined ? 80 : Number(match[2])) === port;
 }
 
+/** True when the request carries a valid MCP bearer token. */
+function isAuthorised(req: Request): boolean {
+    const match = /^Bearer\s+(\S+)$/i.exec(req.headers.authorization ?? '');
+    return match !== null && verifyMcpToken(match[1]);
+}
+
 /**
  * The public MCP endpoint. Mounted before the global body parser and outside
  * the dashboard password middleware: the bearer token is the only credential
@@ -90,18 +96,23 @@ export function createMcpEndpoint(): Router {
         rpcError(res, 403, -32000, 'Forbidden origin');
     });
 
+    // Counts only rejected credentials (401). Authorised requests are never
+    // counted (nor blocked), and every other answer, such as the 405 to the
+    // GET event-stream request MCP clients send after initialize or a 400
+    // parse error, is not a failed login and must not lock a valid client out.
     const authFailures = rateLimit({
         windowMs: 15 * 60 * 1000,
         max: 20,
+        skip: (req) => isAuthorised(req),
         skipSuccessfulRequests: true,
+        requestWasSuccessful: (_req, res) => res.statusCode !== 401,
         standardHeaders: true,
         legacyHeaders: false,
         handler: (_req, res) => rpcError(res, 429, -32000, 'Too many failed authentication attempts')
     });
 
     router.use(authFailures, (req: Request, res: Response, next: NextFunction) => {
-        const match = /^Bearer\s+(\S+)$/i.exec(req.headers.authorization ?? '');
-        if (!match || !verifyMcpToken(match[1])) {
+        if (!isAuthorised(req)) {
             res.setHeader('WWW-Authenticate', 'Bearer realm="qbz-mcp"');
             return rpcError(res, 401, -32001, 'Unauthorized');
         }

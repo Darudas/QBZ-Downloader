@@ -208,6 +208,67 @@ describe('MCP endpoint', () => {
         expect((await post({ authorization: `Bearer ${token}`, origin: 'https://evil.example' })).status).toBe(403);
     });
 
+    it('counts only rejected tokens towards the auth-failure limit', async () => {
+        // Own endpoint instance: the limiter state must not leak into other tests.
+        const limitedApp = express();
+        limitedApp.use('/mcp', createMcpEndpoint());
+        const limited = limitedApp.listen(0, '127.0.0.1');
+        await new Promise((r) => limited.once('listening', r));
+        const url = `http://127.0.0.1:${(limited.address() as AddressInfo).port}/mcp`;
+        const token = await newToken();
+        const headers = (auth: string) => ({
+            authorization: `Bearer ${auth}`,
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'mcp-protocol-version': '2025-06-18'
+        });
+        try {
+            // What every client does per connect: initialize, then the optional GET event stream (405 here).
+            for (let i = 0; i < 25; i++) {
+                const init = await fetch(url, {
+                    method: 'POST',
+                    headers: headers(token),
+                    body: JSON.stringify({
+                        jsonrpc: '2.0',
+                        id: 1,
+                        method: 'initialize',
+                        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } }
+                    })
+                });
+                expect(init.status).toBe(200);
+                await init.text();
+                const stream = await fetch(url, { method: 'GET', headers: headers(token) });
+                expect(stream.status).not.toBe(429);
+                expect(stream.status).toBeGreaterThanOrEqual(400);
+                await stream.text();
+                const bad = await fetch(url, { method: 'POST', headers: headers(token), body: '{not json' });
+                expect(bad.status).toBe(400);
+                await bad.text();
+            }
+
+            const statuses: number[] = [];
+            for (let i = 0; i < 22; i++) {
+                const res = await fetch(url, { method: 'POST', headers: headers('wrong-token'), body: '{}' });
+                statuses.push(res.status);
+                await res.text();
+            }
+            expect(statuses.slice(0, 20).every((s) => s === 401)).toBe(true);
+            expect(statuses.at(-1)).toBe(429);
+
+            // A valid client on the same address keeps working.
+            const after = await fetch(url, {
+                method: 'POST',
+                headers: headers(token),
+                body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' })
+            });
+            expect(after.status).toBe(200);
+            await after.text();
+        } finally {
+            limited.closeAllConnections();
+            await new Promise<void>((r) => limited.close(() => r()));
+        }
+    });
+
     it('lists tools by permission group and runs them', async () => {
         const token = await newToken();
         const client = await connect(token);
