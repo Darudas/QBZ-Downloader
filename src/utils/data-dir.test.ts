@@ -64,6 +64,17 @@ describe('resolveDataDir', () => {
         expect(result.warnings).toHaveLength(1);
     });
 
+    it('follows the database, not a stray key file in the app folder', () => {
+        const result = resolveDataDir({
+            env: {},
+            cwd: elsewhere,
+            appRoot: app,
+            exists: existsIn('/opt/qbz/data/.secret.key', '/home/user/data/qbz.db', '/home/user/data/.secret.key')
+        });
+        expect(result.dir).toBe(path.join(elsewhere, 'data'));
+        expect(result.source).toBe('legacy-cwd');
+    });
+
     it('starts fresh installs in the app folder', () => {
         expect(resolveDataDir({ env: {}, cwd: elsewhere, appRoot: app, exists: () => false })).toEqual({
             dir: path.join(app, 'data'),

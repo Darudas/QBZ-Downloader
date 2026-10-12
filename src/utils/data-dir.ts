@@ -42,6 +42,8 @@ export interface DataDirResolution {
 const hasState = (dir: string, exists: (p: string) => boolean): boolean =>
     STATE_FILES.some((name) => exists(path.join(dir, name)));
 
+const hasDatabase = (dir: string, exists: (p: string) => boolean): boolean => exists(path.join(dir, 'qbz.db'));
+
 const samePath = (a: string, b: string): boolean =>
     process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 
@@ -67,7 +69,13 @@ export function resolveDataDir(
     const appData = path.resolve(appRoot, 'data');
     if (samePath(appData, cwdData)) return { dir: appData, source: 'app', warnings: [] };
 
-    if (hasState(appData, exists)) {
+    // The database decides which folder is in use: a stray key file alone
+    // (e.g. left behind by an earlier start) must not win over a folder
+    // that holds the real database.
+    const appHasDb = hasDatabase(appData, exists);
+    const cwdHasDb = hasDatabase(cwdData, exists);
+
+    if (appHasDb || (!cwdHasDb && hasState(appData, exists))) {
         const warnings = hasState(cwdData, exists)
             ? [
                   `Ignoring app data in ${cwdData} (current directory); using ${appData}. ` +
