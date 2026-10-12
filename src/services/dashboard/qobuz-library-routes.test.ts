@@ -30,9 +30,12 @@ const service = vi.hoisted(() => ({
 }));
 
 const downloadFavorites = vi.hoisted(() => vi.fn());
+const downloadPurchases = vi.hoisted(() => vi.fn());
+const favoritesSync = vi.hoisted(() => ({ syncNow: vi.fn(), getStatus: vi.fn() }));
 
 vi.mock('../qobuz-library/index.js', () => ({ qobuzLibraryService: service }));
-vi.mock('../favorites-download.js', () => ({ downloadFavorites }));
+vi.mock('../favorites-download.js', () => ({ downloadFavorites, downloadPurchases }));
+vi.mock('../favorites-sync.js', () => ({ favoritesSyncService: favoritesSync }));
 vi.mock('../download-actions.js', async () => {
     const { z } = await import('zod');
     return { downloadQualitySchema: z.union([z.number(), z.string()]) };
@@ -109,6 +112,23 @@ describe('Qobuz library routes', () => {
             expect(downloadFavorites).not.toHaveBeenCalled();
         });
 
+        it('checks for new favorites now and reports the sync state', async () => {
+            favoritesSync.syncNow.mockResolvedValue({ baselineRecorded: ['albums'], queued: 0 });
+            favoritesSync.getStatus.mockReturnValue({ autoDownload: true, nextSyncAt: null });
+            const run = await request(app).post('/api/favorites/sync').send({});
+            expect(run.status).toBe(200);
+            expect(run.body).toEqual({ baselineRecorded: ['albums'], queued: 0 });
+            const status = await request(app).get('/api/favorites/sync');
+            expect(status.body).toEqual({ autoDownload: true, nextSyncAt: null });
+        });
+
+        it('maps a favorites sync failure to a JSON error', async () => {
+            favoritesSync.syncNow.mockRejectedValue(new ForbiddenError('Missing credentials'));
+            const res = await request(app).post('/api/favorites/sync');
+            expect(res.status).toBe(403);
+            expect(res.body).toMatchObject({ error: 'Missing credentials' });
+        });
+
         it('rejects a non-object body', async () => {
             const res = await request(app).post('/api/favorites').send([1, 2]);
             expect(res.status).toBe(400);
@@ -182,6 +202,23 @@ describe('Qobuz library routes', () => {
             await request(app).get('/api/purchases/ids');
             expect(service.listPurchases).toHaveBeenCalledWith('tracks', {});
             expect(service.getPurchaseIds).toHaveBeenCalled();
+        });
+
+        it('queues purchases for download', async () => {
+            downloadPurchases.mockResolvedValue({ queued: 2, deduped: 1, skipped: 4, failed: 0 });
+            const res = await request(app).post('/api/purchases/download').send({ type: 'tracks', quality: 'max' });
+            expect(res.status).toBe(200);
+            expect(res.body).toEqual({ queued: 2, deduped: 1, skipped: 4, failed: 0 });
+            expect(downloadPurchases).toHaveBeenCalledWith('tracks', 'max', 'dashboard');
+        });
+
+        it('defaults the purchases download to all and rejects unknown types', async () => {
+            downloadPurchases.mockResolvedValue({ queued: 0, deduped: 0, skipped: 0, failed: 0 });
+            await request(app).post('/api/purchases/download').send({});
+            expect(downloadPurchases).toHaveBeenCalledWith('all', undefined, 'dashboard');
+            const bad = await request(app).post('/api/purchases/download').send({ type: 'videos' });
+            expect(bad.status).toBe(400);
+            expect(downloadPurchases).toHaveBeenCalledTimes(1);
         });
 
         it('passes discovery type and genre', async () => {

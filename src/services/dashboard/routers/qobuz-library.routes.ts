@@ -2,7 +2,8 @@ import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { qobuzLibraryService } from '../../qobuz-library/index.js';
 import { downloadQualitySchema } from '../../download-actions.js';
-import { downloadFavorites } from '../../favorites-download.js';
+import { downloadFavorites, downloadPurchases } from '../../favorites-download.js';
+import { favoritesSyncService } from '../../favorites-sync.js';
 import { parseBody, parseQuery, routeErrorHandler } from './route-utils.js';
 
 /**
@@ -72,7 +73,8 @@ const resolveQuery = z.object({
     details: z.enum(['true', 'false', '1', '0']).optional()
 });
 
-const favoritesDownloadBody = z.object({
+/** Body of the favorites and purchases bulk downloads. */
+const libraryDownloadBody = z.object({
     type: z.enum(['albums', 'tracks', 'all']).default('all'),
     quality: downloadQualitySchema.nullish()
 });
@@ -124,8 +126,21 @@ router.delete('/favorites', async (req: Request, res: Response) => {
 
 /** Queues every favorite album and/or track; tracks already in the library are skipped. */
 router.post('/favorites/download', async (req: Request, res: Response) => {
-    const body = parseBody(favoritesDownloadBody, req.body);
+    const body = parseBody(libraryDownloadBody, req.body);
     res.json(await downloadFavorites(body.type, body.quality, 'dashboard'));
+});
+
+/** Favorites auto-download state: settings, last and next check. */
+router.get('/favorites/sync', (_req: Request, res: Response) => {
+    res.json(favoritesSyncService.getStatus());
+});
+
+/**
+ * Checks for favorites added since the last check and queues them. The first
+ * check only records a baseline and downloads nothing.
+ */
+router.post('/favorites/sync', async (_req: Request, res: Response) => {
+    res.json(await favoritesSyncService.syncNow());
 });
 
 /* ------------------------------------------------------------------ */
@@ -188,6 +203,12 @@ router.get('/purchases', async (req: Request, res: Response) => {
 
 router.get('/purchases/ids', async (_req: Request, res: Response) => {
     res.json(await library.getPurchaseIds());
+});
+
+/** Queues every purchased album and/or track; tracks already in the library are skipped. */
+router.post('/purchases/download', async (req: Request, res: Response) => {
+    const body = parseBody(libraryDownloadBody, req.body);
+    res.json(await downloadPurchases(body.type, body.quality, 'dashboard'));
 });
 
 /* ------------------------------------------------------------------ */

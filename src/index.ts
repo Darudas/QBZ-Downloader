@@ -9,6 +9,7 @@ import { historyService } from './services/history.js';
 import { validateEnvironment, displayEnvWarnings } from './utils/env.js';
 import { logger } from './utils/logger.js';
 import { playlistWatcherService } from './services/PlaylistWatcherService.js';
+import { favoritesSyncService } from './services/favorites-sync.js';
 import { libraryWatcher } from './services/LibraryWatcher.js';
 import { printLogo } from './utils/ui.js';
 import { CONFIG } from './config.js';
@@ -34,6 +35,7 @@ async function gracefulShutdown(signal: string) {
     logger.info('Dashboard service terminated.', 'WEB');
 
     playlistWatcherService.stop();
+    favoritesSyncService.stop();
     await libraryWatcher.stop();
 
     logger.success('System shutdown sequence completed successfully.', 'SYSTEM');
@@ -97,6 +99,10 @@ async function main() {
         dashboardService.start();
 
         libraryWatcher.start();
+
+        // Idle unless favorites auto-download is enabled; checks are skipped
+        // until Qobuz credentials are configured (it reacts to settings changes).
+        favoritesSyncService.start();
 
         // Check for ffmpeg if export is enabled
         if (CONFIG.export.enabled) {
