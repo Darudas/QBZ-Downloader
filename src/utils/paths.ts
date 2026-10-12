@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { isSystemRoot } from './system-root.js';
 import { CONFIG } from '../config.js';
 
 /**
@@ -30,15 +31,15 @@ const resolveReal = (target: string): string => {
     }
 };
 
-/** True for `/`, `C:\` or a UNC share root: every path on that volume is below it. */
-export const isFilesystemRoot = (dir: string): boolean => {
-    const resolved = path.resolve(dir);
-    return path.parse(resolved).root === resolved;
-};
+/**
+ * True for the system volume root (`/`, usually `C:\`). Other drive roots and
+ * NAS shares are allowed; see isSystemRoot.
+ */
+export const isFilesystemRoot = (dir: string): boolean => isSystemRoot(dir);
 
 /**
  * Directories the app owns: the download/library root, plus the export dir.
- * A filesystem root is never one of them, even when configured as the
+ * The system volume root is never one of them, even when configured as the
  * download folder: it would turn every file on the volume into a "managed"
  * file that the library routes may delete or overwrite.
  */

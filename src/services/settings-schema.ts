@@ -1,9 +1,9 @@
-import path from 'path';
 import { z } from 'zod';
 import { CONFIG } from '../config.js';
 import { FAVORITES_AUTO_DOWNLOAD_TYPES, FAVORITES_SYNC_INTERVAL_RANGE } from '../config-values.js';
 import { settingsService, type KnownSettingKey } from './settings.js';
 import { ValidationError, type ValidationIssue } from '../utils/errors.js';
+import { isSystemRoot } from '../utils/system-root.js';
 
 /**
  * Per-key validation for every setting that may be written from outside
@@ -67,15 +67,13 @@ const credential = (max: number) =>
 
 const numericId = z.string().trim().regex(/^\d{1,20}$/, 'Must be numeric');
 
-const isFilesystemRoot = (value: string): boolean => {
-    const resolved = path.resolve(value);
-    return path.parse(resolved).root === resolved;
-};
-
-/** A directory the app writes into. A filesystem root would make every path "managed". */
+/**
+ * A directory the app writes into. The system volume root would make every
+ * file of the system "managed"; other drive roots and NAS shares are fine.
+ */
 const directory = text(1024)
     .refine((value) => value.length > 0, 'Must not be empty')
-    .refine((value) => !isFilesystemRoot(value), 'Must not be a filesystem root');
+    .refine((value) => !isSystemRoot(value), 'Must not be the root of the system drive');
 
 const isDotSegment = (segment: string): boolean => /^\.+$/.test(segment.trim());
 
