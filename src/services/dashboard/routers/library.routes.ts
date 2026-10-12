@@ -6,9 +6,8 @@ import { CONFIG } from '../../../config.js';
 import { formatConverterService } from '../../FormatConverterService.js';
 import { logger } from '../../../utils/logger.js';
 import { isPathWithinManagedRoots } from '../../../utils/paths.js';
-import { downloadQueue } from '../../queue/queue.js';
 import { QueueRequestError } from '../../queue/utils.js';
-import { normalizeDownloadQuality } from '../../../config.js';
+import { queueLibraryUpgrade } from '../../library-upgrade.js';
 import { isPublicHttpUrl, MAX_IMAGE_BYTES, MAX_IMAGE_REDIRECTS } from '../../../utils/net.js';
 import {
     listSmartPlaylists,
@@ -47,54 +46,15 @@ router.get('/scan/status', async (req: Request, res: Response) => {
     });
 });
 
-/**
- * Queues a Hi-Res upgrade for a scanned library file. The old file is deleted
- * after the better copy is downloaded, so the request may only name a file the
- * scanner indexed and one of the upgrade candidates the scanner recorded for
- * it; the upgrade metadata itself is built here, never taken from the client.
- */
+/** Queues a Hi-Res upgrade; validation lives in queueLibraryUpgrade. */
 router.post('/upgrade', (req: Request, res: Response) => {
-    const filePath = typeof req.body?.filePath === 'string' ? req.body.filePath : '';
     const trackId = String(req.body?.trackId ?? '').trim();
-    if (!filePath || !/^\d{1,20}$/.test(trackId)) {
+    if (!/^\d{1,20}$/.test(trackId)) {
         res.status(400).json({ error: 'filePath and a numeric trackId are required' });
         return;
     }
-    if (!isPathWithinManagedRoots(filePath)) {
-        res.status(403).json({ error: 'File is outside the managed library folders' });
-        return;
-    }
-
-    const libraryFile = databaseService.getLibraryFileByPath(filePath);
-    if (!libraryFile) {
-        res.status(404).json({ error: 'File is not in the scanned library' });
-        return;
-    }
-
-    let candidates: Array<{ trackId?: unknown; quality?: unknown; title?: unknown; album?: unknown }> = [];
     try {
-        const parsed = JSON.parse(String(libraryFile.upgrade_candidates ?? '[]'));
-        if (Array.isArray(parsed)) candidates = parsed;
-    } catch {
-        candidates = [];
-    }
-    const candidate = candidates.find((c) => String(c?.trackId) === trackId);
-    if (!candidate) {
-        res.status(400).json({ error: 'trackId is not an upgrade candidate for this file' });
-        return;
-    }
-
-    try {
-        const quality = normalizeDownloadQuality(req.body?.quality ?? candidate.quality, 27);
-        const item = downloadQueue.add('track', trackId, quality, {
-            metadata: {
-                isUpgrade: true,
-                oldFilePath: filePath,
-                libraryFileId: libraryFile.id as number | undefined,
-                selectedUpgradeTitle: typeof candidate.title === 'string' ? candidate.title : undefined,
-                selectedUpgradeAlbum: typeof candidate.album === 'string' ? candidate.album : undefined
-            }
-        });
+        const item = queueLibraryUpgrade({ filePath: req.body?.filePath, trackId, quality: req.body?.quality });
         res.json({ success: true, item });
     } catch (error: unknown) {
         if (error instanceof QueueRequestError) {

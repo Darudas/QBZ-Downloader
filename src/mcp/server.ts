@@ -17,7 +17,11 @@ import { historyService } from '../services/history.js';
 import { libraryScannerService } from '../services/library-scanner/index.js';
 import { playlistWatcherService } from '../services/PlaylistWatcherService.js';
 import { validateEnvironment } from '../utils/env.js';
-import { toSafeErrorPayload } from '../utils/errors.js';
+import { isPathWithinManagedRoots } from '../utils/paths.js';
+import { queueLibraryUpgrade } from '../services/library-upgrade.js';
+import { retagFileFromQobuz } from '../services/metadata-repair.js';
+import fs from 'fs';
+import { ForbiddenError, NotFoundError, toSafeErrorPayload } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 import {
     APP_VERSION,
@@ -358,6 +362,114 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         annotations: READ_LOCAL
     }, () => libraryScannerService.getScanStats());
 
+    /* ------------------------ local library ----------------------- */
+
+    const fileExists = (p: unknown): boolean => {
+        try {
+            return typeof p === 'string' && fs.statSync(p).isFile();
+        } catch {
+            return false;
+        }
+    };
+
+    tool('check_in_library', 'read', {
+        title: 'Already downloaded?',
+        description:
+            'Check whether Qobuz tracks/albums are already in the local library (downloaded by this app and still on disk). ' +
+            'Albums report complete/partial/missing compared with the Qobuz track count.',
+        inputSchema: z.object({
+            track_ids: idList.optional(),
+            album_ids: z.array(albumId).max(50).optional()
+        }),
+        annotations: READ
+    }, async ({ track_ids, album_ids }) => {
+        const tracks: Record<string, { in_library: boolean; quality?: number | null }> = {};
+        for (const id of track_ids ?? []) {
+            const row = databaseService.getTrack(String(id)) as { file_path?: string; quality?: number } | undefined;
+            const present = Boolean(row) && fileExists(row?.file_path);
+            tracks[String(id)] = present ? { in_library: true, quality: row?.quality ?? null } : { in_library: false };
+        }
+        const albums: Record<string, { status: 'complete' | 'partial' | 'missing'; downloaded: number; total: number | null }> = {};
+        const stmt = databaseService.getDb().prepare('SELECT file_path FROM tracks WHERE album_id = ?');
+        for (const id of album_ids ?? []) {
+            const rows = stmt.all(id) as Array<{ file_path: string | null }>;
+            const downloaded = rows.filter((r) => fileExists(r.file_path)).length;
+            let total: number | null = null;
+            try {
+                const album = await qobuzApi.getAlbum(id);
+                total = typeof album.data?.tracks_count === 'number' ? album.data.tracks_count : null;
+            } catch {
+                total = null;
+            }
+            const status = downloaded === 0 ? 'missing' : total !== null && downloaded >= total ? 'complete' : 'partial';
+            albums[id] = { status, downloaded, total };
+        }
+        return { tracks, albums };
+    });
+
+    tool('search_local_library', 'read', {
+        title: 'Search local library',
+        description: 'Search tracks downloaded by this app by title, artist or album (max 100 results).',
+        inputSchema: z.object({ query: z.string().trim().min(1).max(200), limit: limit(25) }),
+        annotations: READ_LOCAL
+    }, ({ query, limit: lim }) => {
+        const rows = databaseService.searchTracks(query) as unknown as Array<Record<string, unknown>>;
+        return {
+            items: rows.slice(0, lim).map((r) => ({
+                track_id: r.id,
+                title: r.title,
+                artist: r.artist,
+                album: r.album,
+                album_id: r.album_id,
+                quality: r.quality,
+                on_disk: fileExists(r.file_path),
+                file_path: r.file_path
+            })),
+            total: rows.length
+        };
+    });
+
+    tool('list_duplicates', 'read', {
+        title: 'Duplicates',
+        description: 'Duplicate files found by the last library scan (run start_library_scan first).',
+        inputSchema: z.object({ limit: limit(25), offset }),
+        annotations: READ_LOCAL
+    }, ({ limit: lim, offset: off }) => {
+        const rows = databaseService.getDuplicates() as Array<Record<string, unknown>>;
+        return sliceItems(
+            rows.slice(off, off + lim).map((r) => ({
+                duplicate_id: r.id,
+                file_1: r.file_path_1,
+                file_2: r.file_path_2,
+                match_type: r.match_type,
+                confidence: r.confidence
+            })),
+            rows.length,
+            off,
+            lim
+        );
+    });
+
+    tool('list_upgrade_candidates', 'read', {
+        title: 'Hi-Res upgrade candidates',
+        description: 'Local files for which Qobuz offers a better quality (found by the library scan).',
+        inputSchema: z.object({ limit: limit(25), offset }),
+        annotations: READ_LOCAL
+    }, ({ limit: lim, offset: off }) => {
+        const files = libraryScannerService.getUpgradeableFiles();
+        return sliceItems(files.slice(off, off + lim), files.length, off, lim);
+    });
+
+    tool('list_missing_metadata', 'read', {
+        title: 'Files with missing metadata',
+        description: 'Local files whose tags are incomplete (found by the library scan).',
+        inputSchema: z.object({ limit: limit(25), offset }),
+        annotations: READ_LOCAL
+    }, ({ limit: lim, offset: off }) => {
+        const files = libraryScannerService.getMissingMetadataFiles();
+        return sliceItems(files.slice(off, off + lim), files.length, off, lim);
+    });
+
     /* --------------------------- library -------------------------- */
 
     const favoriteIds = z.object({
@@ -575,6 +687,27 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         annotations: WRITE_IDEMPOTENT
     }, ({ playlist_id }) => playlistWatcherService.syncNow(playlist_id));
 
+    tool('queue_upgrade', 'manage', {
+        title: 'Upgrade a local file',
+        description:
+            'Download a better-quality version of a local file (see list_upgrade_candidates). The old file is replaced ' +
+            'after the new one is downloaded. Without track_id the best recorded candidate is used.',
+        inputSchema: z.object({ file_path: z.string().min(1).max(4096), track_id: numericId.optional(), quality }),
+        annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true }
+    }, ({ file_path, track_id, quality: q }) => {
+        const item = queueLibraryUpgrade({ filePath: file_path, trackId: track_id, quality: q });
+        return { queued: true, queue_id: item.id, track_id: item.contentId, quality: item.quality };
+    });
+
+    tool('retag_file_from_qobuz', 'manage', {
+        title: 'Fix tags from Qobuz',
+        description:
+            'Rewrite all tags and the embedded cover of a local file from a Qobuz track (use list_missing_metadata and ' +
+            'search_catalog to find the matching track). Replaces the existing tags.',
+        inputSchema: z.object({ file_path: z.string().min(1).max(4096), track_id: numericId }),
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true }
+    }, ({ file_path, track_id }) => retagFileFromQobuz(file_path, track_id));
+
     /* ------------------------- destructive ------------------------ */
 
     tool('delete_playlist', 'destructive', {
@@ -590,6 +723,24 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         inputSchema: z.object({ confirm }),
         annotations: { ...DESTRUCTIVE, openWorldHint: false }
     }, () => ({ cleared: downloadActionsService.clearPending() }));
+
+    tool('resolve_duplicate', 'destructive', {
+        title: 'Resolve duplicate',
+        description:
+            'Delete the worse file of a duplicate pair (keeps higher quality, then larger size). Deletes a file from disk.',
+        inputSchema: z.object({ duplicate_id: z.number().int().positive(), confirm }),
+        annotations: { ...DESTRUCTIVE, openWorldHint: false }
+    }, async ({ duplicate_id }) => {
+        const row = databaseService.getDb()
+            .prepare('SELECT file_path_1, file_path_2 FROM duplicates WHERE id = ?')
+            .get(duplicate_id) as { file_path_1: string; file_path_2: string } | undefined;
+        if (!row) throw new NotFoundError('Duplicate not found');
+        // resolveDuplicate deletes without its own containment check.
+        if (!isPathWithinManagedRoots(row.file_path_1) || !isPathWithinManagedRoots(row.file_path_2)) {
+            throw new ForbiddenError('Duplicate files are outside the managed library folders');
+        }
+        return libraryScannerService.resolveDuplicate(duplicate_id);
+    });
 
     return server;
 }

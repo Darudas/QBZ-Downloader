@@ -245,7 +245,7 @@ Conventions for every tool:
   aliases). Anything else falls back to the default instead of reaching `getFileUrl`.
 
 **B2: MCP server (core done)**
-- `src/mcp/server.ts`: 41 tools across the groups read/library/download/manage/destructive,
+- `src/mcp/server.ts`: 49 tools across the groups read/library/download/manage/destructive,
   registered per request according to `MCP_PERMISSIONS`. Destructive tools need `confirm: true`. The
   handler wrapper sanitizes errors and audit-logs calls by name.
 - `src/mcp/http.ts`: the `/mcp` endpoint, with a rate limit, a 404 while disabled, a foreign-Origin

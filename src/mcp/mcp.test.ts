@@ -18,6 +18,7 @@ vi.mock('../utils/logger.js', () => ({
 }));
 vi.mock('../api/qobuz.js', () => ({
     qobuzApi: {
+        getAlbum: vi.fn().mockResolvedValue({ success: true, data: { tracks_count: 2 } }),
         search: vi.fn().mockResolvedValue({
             success: true,
             data: { albums: { items: [{ id: 'abc1', title: 'Kind of Blue', artist: { id: 1, name: 'Miles' } }], total: 1 } }
@@ -36,9 +37,30 @@ vi.mock('../services/download-actions.js', () => ({
     }
 }));
 vi.mock('../services/queue/queue.js', () => ({ downloadQueue: { getStats: () => ({}), isPaused: () => false } }));
-vi.mock('../services/database/index.js', () => ({ databaseService: { hasTrack: () => false } }));
+const db = vi.hoisted(() => ({
+    rows: { dup: { file_path_1: '/music/a.flac', file_path_2: '/music/b.flac' } as Record<string, string> | undefined }
+}));
+vi.mock('../services/database/index.js', () => ({
+    databaseService: {
+        hasTrack: () => false,
+        getTrack: (id: string) => (id === '1' ? { file_path: __filename, quality: 27 } : undefined),
+        getDuplicates: () => [{ id: 3, file_path_1: '/music/a.flac', file_path_2: '/music/b.flac', match_type: 'exact' }],
+        getDb: () => ({
+            prepare: (sql: string) => ({
+                all: () => (sql.includes('album_id') ? [{ file_path: __filename }] : []),
+                get: () => db.rows.dup
+            })
+        })
+    }
+}));
+vi.mock('../utils/paths.js', () => ({ isPathWithinManagedRoots: (p: string) => p.startsWith('/music/') }));
 vi.mock('../services/history.js', () => ({ historyService: {} }));
-vi.mock('../services/library-scanner/index.js', () => ({ libraryScannerService: { isScanInProgress: () => false } }));
+vi.mock('../services/library-scanner/index.js', () => ({
+    libraryScannerService: {
+        isScanInProgress: () => false,
+        resolveDuplicate: vi.fn().mockResolvedValue({ deleted: '/music/b.flac' })
+    }
+}));
 vi.mock('../services/PlaylistWatcherService.js', () => ({ playlistWatcherService: {} }));
 vi.mock('../utils/env.js', () => ({ validateEnvironment: () => ({ valid: true }) }));
 
@@ -124,6 +146,27 @@ describe('MCP endpoint', () => {
         expect(refused.isError).toBe(true);
         const done = await client.callTool({ name: 'delete_playlist', arguments: { playlist_id: 5, confirm: true } });
         expect(done.isError).toBeFalsy();
+        await client.close();
+    });
+
+    it('checks library ownership and guards duplicate deletion', async () => {
+        state.settings.set('MCP_PERMISSIONS', 'destructive');
+        const client = await connect(await newToken());
+        const check = await client.callTool({
+            name: 'check_in_library',
+            arguments: { track_ids: [1, 2], album_ids: ['abc1'] }
+        });
+        expect(check.structuredContent).toMatchObject({
+            tracks: { '1': { in_library: true }, '2': { in_library: false } },
+            albums: { abc1: { status: 'partial', downloaded: 1, total: 2 } }
+        });
+
+        const ok = await client.callTool({ name: 'resolve_duplicate', arguments: { duplicate_id: 3, confirm: true } });
+        expect(ok.isError).toBeFalsy();
+        db.rows.dup = { file_path_1: '/etc/passwd', file_path_2: '/music/b.flac' };
+        const refused = await client.callTool({ name: 'resolve_duplicate', arguments: { duplicate_id: 3, confirm: true } });
+        expect(refused.isError).toBe(true);
+        db.rows.dup = { file_path_1: '/music/a.flac', file_path_2: '/music/b.flac' };
         await client.close();
     });
 });

@@ -98,7 +98,7 @@ When editing a ruleset over REST, the review rule type is `pull_request` (not `r
 
 ## Qobuz library + MCP work in progress
 
-`docs/qobuz-library-and-mcp.md` is the plan and status for the Qobuz user-library features and the
+`docs/HANDOVER.md` is the short current-state handover; `docs/qobuz-library-and-mcp.md` is the plan and status for the Qobuz user-library features and the
 MCP (AI control) endpoint: architecture decisions, the security model for `/mcp`, the tool catalogue,
 new settings keys, what is done and what is still open. Read it before touching
 `src/api/qobuz.ts`, `src/services/qobuz-library/`, `src/services/download-actions.ts`, the queue, or
