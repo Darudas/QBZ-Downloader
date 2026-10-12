@@ -1,6 +1,6 @@
 # Handover: Qobuz library + MCP (branch `claude/lucid-clarke-915f6x`)
 
-As of this handover, everything is committed and pushed: 398 backend tests and 82 client tests pass,
+As of this handover, everything is committed and pushed: 419 backend tests and 97 client tests pass,
 `tsc` passes, lint has 0 errors and `npm run build` works.
 Related documents:
 - `docs/qobuz-library-and-mcp.md`: full plan, architecture decisions, security model and detailed status.
@@ -58,13 +58,24 @@ Related documents:
    - The backend routes already exist: `GET /api/mcp/status`, `POST /api/mcp/config` with
      `{enabled, permissions}`, `POST`/`DELETE /api/mcp/token`.
    - Add translations to all 9 locale files.
-2. **REST routes for the library features** (B1). The service layer is ready:
-   - `/api/favorites`
-   - `/api/me/playlists`
-   - `/api/purchases`
-   - `/api/discover/*`
-3. **UI for those features** (C1): favorites view, heart buttons, "My playlists" view and add-to-playlist
-   modal.
+2. ~~REST routes for the library features (B1)~~ **done**:
+   `src/services/dashboard/routers/qobuz-library.routes.ts` (thin layer over `QobuzLibraryService`).
+   - `/api/favorites` (GET list, POST add, DELETE remove), `/api/favorites/ids` (all ids, or a per-id
+     lookup with `albumIds`/`trackIds`/`artistIds`), `POST /api/favorites/download`
+   - `/api/me/playlists` (list/create), `/api/me/playlists/:id` (get/patch/delete), `.../tracks`
+     (POST add, DELETE remove), `.../follow` (POST/DELETE)
+   - `/api/purchases`, `/api/purchases/ids`, `/api/discover/albums`, `/api/discover/playlists`,
+     `/api/label/:id`, `/api/artist/:id/similar`, `/api/artist/:id/releases`, `/api/account`, `/api/resolve`
+   - `downloadFavorites` lives in `src/services/favorites-download.ts` and is shared with the MCP tool.
+3. **UI for those features** (C1), mostly **done**:
+   - `FavoritesView` (tabs, download all missing, remove via heart), `MyPlaylistsView` with detail
+     (create, rename, delete, unfollow, remove tracks, download)
+   - `FavoriteButton` + `stores/favoritesStore.ts` (optimistic), hearts in search, album and artist views
+   - `AddToPlaylistModal` from search, album, album tracks and favorites
+   - `apiJson` in `client/src/utils/api.ts` checks `res.ok` and throws the server's error message
+   - translations for all 9 locales
+   - Still open: `DiscoverView` (featured albums/playlists, genre filter, labels), a heart in the player,
+     purchases view. Checked visually only with injected sample data; no real Qobuz account.
 4. **Phase A3 hardening**:
    - zod validation for `POST /api/settings/update`
    - `..` in folder/file templates

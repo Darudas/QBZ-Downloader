@@ -148,15 +148,16 @@ export const AddToPlaylistModal: React.FC<AddToPlaylistModalProps> = ({ isOpen, 
                 )}
 
                 <form onSubmit={createWithTracks} style={{ display: 'flex', gap: 8, margin: '16px 0' }}>
-                    <input
-                        type="text"
-                        value={newName}
-                        maxLength={200}
-                        onChange={(e) => setNewName(e.target.value)}
-                        placeholder={t('placeholder_new_playlist')}
-                        aria-label={t('placeholder_new_playlist')}
-                        style={{ flex: 1 }}
-                    />
+                    <div className="form-group" style={{ flex: 1, margin: 0 }}>
+                        <input
+                            type="text"
+                            value={newName}
+                            maxLength={200}
+                            onChange={(e) => setNewName(e.target.value)}
+                            placeholder={t('placeholder_new_playlist')}
+                            aria-label={t('placeholder_new_playlist')}
+                        />
+                    </div>
                     <button type="submit" className="btn primary" disabled={!newName.trim() || busyId !== null} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                         <Icons.Plus width={14} height={14} /> {t('action_create')}
                     </button>

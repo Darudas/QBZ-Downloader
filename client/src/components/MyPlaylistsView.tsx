@@ -201,9 +201,9 @@ const PlaylistDetail: React.FC<{ playlistId: string; onBack: () => void; onChang
                 )}
                 <div className="album-header-info">
                     {editing ? (
-                        <form onSubmit={saveEdit} style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 480 }}>
+                        <form onSubmit={saveEdit} className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 480, margin: 0 }}>
                             <input value={name} onChange={(e) => setName(e.target.value)} maxLength={200} required aria-label={t('label_name')} />
-                            <textarea value={description} onChange={(e) => setDescription(e.target.value)} maxLength={2000} rows={3} aria-label={t('label_description')} />
+                            <textarea value={description} onChange={(e) => setDescription(e.target.value)} maxLength={2000} rows={3} aria-label={t('label_description')} style={{ background: 'rgba(0, 0, 0, 0.2)', border: '1px solid var(--border)', borderRadius: 14, padding: '12px 16px', color: 'var(--text-primary)', fontSize: 14, fontFamily: 'inherit', resize: 'vertical' }} />
                             <div style={{ display: 'flex', gap: 8 }}>
                                 <button type="submit" className="btn primary" disabled={busy || !name.trim()}>{t('action_save')}</button>
                                 <button type="button" className="btn secondary" onClick={() => setEditing(false)}>{t('action_cancel')}</button>
@@ -417,15 +417,16 @@ export const MyPlaylistsView: React.FC = () => {
 
             {creating && (
                 <form onSubmit={create} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 20, flexWrap: 'wrap' }}>
-                    <input
-                        autoFocus
-                        value={newName}
-                        maxLength={200}
-                        onChange={(e) => setNewName(e.target.value)}
-                        placeholder={t('placeholder_new_playlist')}
-                        aria-label={t('placeholder_new_playlist')}
-                        style={{ flex: 1, minWidth: 200 }}
-                    />
+                    <div className="form-group" style={{ flex: 1, minWidth: 200, margin: 0 }}>
+                        <input
+                            autoFocus
+                            value={newName}
+                            maxLength={200}
+                            onChange={(e) => setNewName(e.target.value)}
+                            placeholder={t('placeholder_new_playlist')}
+                            aria-label={t('placeholder_new_playlist')}
+                        />
+                    </div>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
                         <input type="checkbox" checked={newPublic} onChange={(e) => setNewPublic(e.target.checked)} />
                         {t('label_public')}
