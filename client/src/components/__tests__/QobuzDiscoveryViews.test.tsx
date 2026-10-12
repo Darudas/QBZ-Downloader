@@ -93,18 +93,21 @@ describe('DiscoverView', () => {
         expect(screen.getByText('New One')).toBeInTheDocument();
     });
 
-    it('refetches when the type or genre changes', async () => {
+    it('refetches albums when the type or genre changes', async () => {
         const calls = routes();
         render(<DiscoverView />);
         await screen.findByText('New One');
         fireEvent.change(screen.getByLabelText('label_featured_type'), { target: { value: 'press-awards' } });
         await waitFor(() => expect(calls.some((c) => c.url.includes('type=press-awards'))).toBe(true));
 
+        const playlistCalls = calls.filter((c) => c.url.startsWith('/api/discover/playlists')).length;
         fireEvent.change(await screen.findByLabelText('label_genre'), { target: { value: '80' } });
         await waitFor(() =>
             expect(calls.some((c) => c.url.includes('type=press-awards') && c.url.includes('genre_id=80'))).toBe(true)
         );
-        expect(calls.some((c) => c.url.startsWith('/api/discover/playlists') && c.url.includes('genre_id=80'))).toBe(true);
+        // The genre filter belongs to the album section; featured playlists stay unfiltered.
+        expect(calls.filter((c) => c.url.startsWith('/api/discover/playlists'))).toHaveLength(playlistCalls);
+        expect(calls.some((c) => c.url.startsWith('/api/discover/playlists') && c.url.includes('genre_id'))).toBe(false);
     });
 
     it('offers every featured type with a translated label', async () => {

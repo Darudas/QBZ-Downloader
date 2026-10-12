@@ -82,6 +82,7 @@ export const DiscoverView: React.FC = () => {
             .catch(() => setGenres([]));
     }, []);
 
+    // The genre select sits in the album section and filters featured albums only.
     const genreQuery = genreId ? `&genre_id=${encodeURIComponent(genreId)}` : '';
 
     // Changing the type or genre supersedes a slower earlier request of the same list.
@@ -118,7 +119,7 @@ export const DiscoverView: React.FC = () => {
             setPlaylistsError('');
             try {
                 const page = await apiJson<PageResult<QobuzPlaylistItem>>(
-                    `/api/discover/playlists?type=${playlistType}${genreQuery}&limit=${PLAYLIST_PAGE}&offset=${offset}`
+                    `/api/discover/playlists?type=${playlistType}&limit=${PLAYLIST_PAGE}&offset=${offset}`
                 );
                 if (!isLatest()) return;
                 setPlaylists((prev) => appendPage(offset === 0 ? [] : prev, page.items));
@@ -131,7 +132,7 @@ export const DiscoverView: React.FC = () => {
                 if (isLatest()) setPlaylistsLoading(false);
             }
         },
-        [playlistType, genreQuery, beginPlaylistsRequest]
+        [playlistType, beginPlaylistsRequest]
     );
 
     useEffect(() => {
