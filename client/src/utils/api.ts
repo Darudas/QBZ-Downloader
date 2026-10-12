@@ -37,3 +37,34 @@ export const getQualityLabel = (quality: number | string) => {
     if (q === 5) return 'MP3 320';
     return 'Unknown';
 };
+
+export class ApiError extends Error {
+    constructor(message: string, readonly status: number | null) {
+        super(message);
+        this.name = 'ApiError';
+    }
+}
+
+/**
+ * smartFetch plus JSON: sends `body` as JSON when given, throws an ApiError
+ * with the server's `{ error }` message on a non-2xx answer, a network error
+ * or rate limiting, and returns the parsed response body otherwise.
+ */
+export async function apiJson<T = unknown>(
+    url: string,
+    options: { method?: string; body?: unknown } = {}
+): Promise<T> {
+    const init: RequestInit = { method: options.method ?? 'GET' };
+    if (options.body !== undefined) {
+        init.headers = { 'Content-Type': 'application/json' };
+        init.body = JSON.stringify(options.body);
+    }
+    const res = await smartFetch(url, init);
+    if (!res) throw new ApiError('Network error or rate limited', null);
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+        const message = data && typeof data.error === 'string' ? data.error : `Request failed (${res.status})`;
+        throw new ApiError(message, res.status);
+    }
+    return data as T;
+}

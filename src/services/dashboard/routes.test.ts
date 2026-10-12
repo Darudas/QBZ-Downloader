@@ -227,6 +227,7 @@ vi.mock('../../constants.js', () => ({
 }));
 
 vi.mock('../qobuz-library/index.js', () => ({ qobuzLibraryService: {} }));
+vi.mock('../favorites-download.js', () => ({ downloadFavorites: vi.fn() }));
 
 vi.mock('../FormatConverterService.js', () => ({
     formatConverterService: {

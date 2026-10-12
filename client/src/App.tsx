@@ -17,6 +17,8 @@ import { Player } from './components/Player';
 import { AnalyticsView } from './components/AnalyticsView';
 import { LibraryView } from './components/LibraryView';
 import { PlaylistsView } from './components/PlaylistsView';
+import { FavoritesView } from './components/FavoritesView';
+import { MyPlaylistsView } from './components/MyPlaylistsView';
 import { HistoryView } from './components/HistoryView';
 import { SettingsView } from './components/SettingsView';
 import { LogView } from './components/LogView';
@@ -184,6 +186,8 @@ function AppContent() {
     { id: 'batch', icon: <Icons.Batch />, label: t('menu_batch') },
     { id: 'statistics', icon: <Icons.Analytics />, label: t('menu_analytics') },
     { id: 'library', icon: <Icons.Library />, label: t('menu_library') },
+    { id: 'favorites', icon: <Icons.Heart />, label: t('menu_favorites') },
+    { id: 'my_playlists', icon: <Icons.ListPlus />, label: t('menu_my_playlists') },
     { id: 'playlists', icon: <Icons.Playlist />, label: t('menu_playlists') },
     { id: 'history', icon: <Icons.History />, label: t('menu_history') },
     { id: 'logs', icon: <Icons.Logs />, label: 'System Logs' },
@@ -198,6 +202,8 @@ function AppContent() {
       statistics: t('title_analytics'),
       library: t('title_library'),
       playlists: t('title_playlists'),
+      favorites: t('title_favorites'),
+      my_playlists: t('title_my_playlists'),
       history: t('title_history'),
       logs: 'System Logs',
       settings: t('title_settings'),
@@ -503,6 +509,8 @@ function AppContent() {
                     {activeTab === 'statistics' && <AnalyticsView />}
                     {activeTab === 'library' && <LibraryView />}
                     {activeTab === 'playlists' && <PlaylistsView />}
+                    {activeTab === 'favorites' && <FavoritesView />}
+                    {activeTab === 'my_playlists' && <MyPlaylistsView />}
                     {activeTab === 'history' && <HistoryView />}
                     {activeTab === 'logs' && <LogView />}
                     {activeTab === 'settings' && <SettingsView />}

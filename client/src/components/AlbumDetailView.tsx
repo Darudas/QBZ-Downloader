@@ -6,6 +6,8 @@ import { useToast } from '../contexts/ToastContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useQueueActions } from '../hooks/useQueueActions';
 import { Icons } from './Icons';
+import { FavoriteButton } from './FavoriteButton';
+import { AddToPlaylistModal } from './AddToPlaylistModal';
 interface Track {
     id: string;
     title: string;
@@ -45,6 +47,7 @@ export const AlbumDetailView: React.FC = () => {
     const [showModal, setShowModal] = useState(false);
     const [modalType, setModalType] = useState<'album' | 'lyrics'>('album');
     const [queuedTrackIds, setQueuedTrackIds] = useState<Set<string>>(new Set());
+    const [playlistTarget, setPlaylistTarget] = useState<{ trackIds?: string[]; albumId?: string; label: string } | null>(null);
 
 
 
@@ -238,6 +241,10 @@ export const AlbumDetailView: React.FC = () => {
                             <button className="btn secondary" onClick={() => openDownloadModal('lyrics')} style={{ display: 'flex', alignItems: 'center', gap: '6px' }} title="Download All Lyrics">
                                 <Icons.Mic width={16} height={16} /> All Lyrics
                             </button>
+                            <FavoriteButton kind="album" id={album.id} className="btn secondary" size={16} />
+                            <button className="btn secondary" onClick={() => setPlaylistTarget({ albumId: album.id, label: album.title })} style={{ display: 'flex', alignItems: 'center', gap: '6px' }} title={t('title_add_to_playlist')} aria-label={t('title_add_to_playlist')}>
+                                <Icons.ListPlus width={16} height={16} />
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -271,11 +278,23 @@ export const AlbumDetailView: React.FC = () => {
                                 <button className="btn-track-dl" title={t('action_play')} onClick={() => playTrack(track.id, track.title, track.performer?.name || album.artist.name, cover, album.id, album.tracks.items)}>
                                     <Icons.Play width={14} height={14} />
                                 </button>
+                                <FavoriteButton kind="track" id={track.id} />
+                                <button className="btn-track-dl" title={t('title_add_to_playlist')} aria-label={t('title_add_to_playlist')} onClick={() => setPlaylistTarget({ trackIds: [String(track.id)], label: track.title })}>
+                                    <Icons.ListPlus width={14} height={14} />
+                                </button>
                             </div>
                         </div>
                     ))}
                 </div>
             </div>
+
+            <AddToPlaylistModal
+                isOpen={playlistTarget !== null}
+                onClose={() => setPlaylistTarget(null)}
+                {...(playlistTarget?.trackIds ? { trackIds: playlistTarget.trackIds } : {})}
+                {...(playlistTarget?.albumId ? { albumId: playlistTarget.albumId } : {})}
+                {...(playlistTarget ? { label: playlistTarget.label } : {})}
+            />
 
             {
                 showModal && (

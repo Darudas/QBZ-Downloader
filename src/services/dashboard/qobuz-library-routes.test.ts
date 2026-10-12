@@ -29,7 +29,14 @@ const service = vi.hoisted(() => ({
     resolveUrl: vi.fn()
 }));
 
+const downloadFavorites = vi.hoisted(() => vi.fn());
+
 vi.mock('../qobuz-library/index.js', () => ({ qobuzLibraryService: service }));
+vi.mock('../favorites-download.js', () => ({ downloadFavorites }));
+vi.mock('../download-actions.js', async () => {
+    const { z } = await import('zod');
+    return { downloadQualitySchema: z.union([z.number(), z.string()]) };
+});
 vi.mock('../../utils/logger.js', () => ({ logger: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() } }));
 
 import qobuzLibraryRouter from './routers/qobuz-library.routes.js';
@@ -86,6 +93,20 @@ describe('Qobuz library routes', () => {
             const res = await request(app).post('/api/favorites').send({ trackIds: ['nope'] });
             expect(res.status).toBe(400);
             expect(res.body).toMatchObject({ error: 'Invalid favorite ids' });
+        });
+
+        it('queues favorites for download', async () => {
+            downloadFavorites.mockResolvedValue({ queued: 3, deduped: 0, skipped: 1, failed: 0 });
+            const res = await request(app).post('/api/favorites/download').send({ type: 'albums', quality: 27 });
+            expect(res.status).toBe(200);
+            expect(res.body.queued).toBe(3);
+            expect(downloadFavorites).toHaveBeenCalledWith('albums', 27, 'dashboard');
+        });
+
+        it('rejects an unknown favorites download type', async () => {
+            const res = await request(app).post('/api/favorites/download').send({ type: 'videos' });
+            expect(res.status).toBe(400);
+            expect(downloadFavorites).not.toHaveBeenCalled();
         });
 
         it('rejects a non-object body', async () => {

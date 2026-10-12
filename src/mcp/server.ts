@@ -11,6 +11,7 @@ import {
     type PageResult
 } from '../services/qobuz-library/mappers.js';
 import { downloadActionsService } from '../services/download-actions.js';
+import { downloadFavorites } from '../services/favorites-download.js';
 import { downloadQueue } from '../services/queue/queue.js';
 import { databaseService } from '../services/database/index.js';
 import { historyService } from '../services/history.js';
@@ -590,36 +591,7 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         description: 'Queue all favorite albums and/or tracks (up to 2000 each). Already downloaded tracks are skipped.',
         inputSchema: z.object({ type: z.enum(['albums', 'tracks', 'all']).default('all'), quality }),
         annotations: WRITE_IDEMPOTENT
-    }, async ({ type, quality: q }) => {
-        const result = { queued: 0, deduped: 0, skipped: 0, failed: 0 };
-        const kinds = type === 'all' ? (['albums', 'tracks'] as const) : ([type] as const);
-        for (const kind of kinds) {
-            for (let off = 0; off < 2000; off += 100) {
-                const page = await qobuzLibraryService.listFavorites(kind, { limit: 100, offset: off });
-                for (const item of page.items as Array<{ id: string | number }>) {
-                    const id = String(item.id);
-                    if (kind === 'tracks' && databaseService.hasTrack(id)) {
-                        result.skipped++;
-                        continue;
-                    }
-                    try {
-                        const r = await downloadActionsService.enqueue({
-                            type: kind === 'albums' ? 'album' : 'track',
-                            id,
-                            quality: q,
-                            source: 'mcp'
-                        });
-                        result.queued += r.queued;
-                        result.deduped += r.deduped;
-                    } catch {
-                        result.failed++;
-                    }
-                }
-                if (!page.has_more) break;
-            }
-        }
-        return result;
-    });
+    }, ({ type, quality: q }) => downloadFavorites(type, q, 'mcp'));
 
     tool('control_queue', 'download', {
         title: 'Control queue',

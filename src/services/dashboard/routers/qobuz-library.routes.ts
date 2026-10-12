@@ -1,6 +1,8 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { qobuzLibraryService } from '../../qobuz-library/index.js';
+import { downloadQualitySchema } from '../../download-actions.js';
+import { downloadFavorites } from '../../favorites-download.js';
 import { parseBody, parseQuery, routeErrorHandler } from './route-utils.js';
 
 /**
@@ -70,6 +72,11 @@ const resolveQuery = z.object({
     details: z.enum(['true', 'false', '1', '0']).optional()
 });
 
+const favoritesDownloadBody = z.object({
+    type: z.enum(['albums', 'tracks', 'all']).default('all'),
+    quality: downloadQualitySchema.nullish()
+});
+
 /** Body fields are passed to the service, which validates them strictly. */
 const looseBody = z.record(z.string(), z.unknown());
 
@@ -113,6 +120,12 @@ router.post('/favorites', async (req: Request, res: Response) => {
 
 router.delete('/favorites', async (req: Request, res: Response) => {
     res.json(await library.removeFavorites(parseBody(looseBody, req.body)));
+});
+
+/** Queues every favorite album and/or track; tracks already in the library are skipped. */
+router.post('/favorites/download', async (req: Request, res: Response) => {
+    const body = parseBody(favoritesDownloadBody, req.body);
+    res.json(await downloadFavorites(body.type, body.quality, 'dashboard'));
 });
 
 /* ------------------------------------------------------------------ */

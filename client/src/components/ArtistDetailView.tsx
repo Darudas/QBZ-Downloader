@@ -6,6 +6,7 @@ import { useLanguage } from '../contexts/LanguageContext';
 import { useQueueActions } from '../hooks/useQueueActions';
 import { playTrack } from './Player';
 import { Icons } from './Icons';
+import { FavoriteButton } from './FavoriteButton';
 import type { ArtistData } from '../types/qobuz';
 
 
@@ -137,7 +138,10 @@ export const ArtistDetailView: React.FC = () => {
                     }
                 </div>
                 <div style={{ flex: 1, minWidth: '300px' }}>
-                    <h1 style={{ fontSize: '36px', marginBottom: '16px', fontWeight: 700 }}>{artist.name}</h1>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
+                        <h1 style={{ fontSize: '36px', margin: 0, fontWeight: 700 }}>{artist.name}</h1>
+                        <FavoriteButton kind="artist" id={String(artist.id)} className="btn secondary" size={16} />
+                    </div>
                     {bio && (
                         <div className="artist-bio" style={{ fontSize: '15px', lineHeight: '1.6', color: 'var(--text-secondary)', whiteSpace: 'pre-line' }}>
                             {bioToDisplay}
@@ -281,6 +285,7 @@ export const ArtistDetailView: React.FC = () => {
                                         <button className="btn-track-dl" onClick={() => addToBatchStaging('track', String(track.id))} title={t('menu_batch')}><Icons.Batch width={14} height={14} /></button>
                                         <button className="btn-track-dl" onClick={() => downloadLyrics(String(track.id))} title="Download Lyrics"><Icons.Mic width={14} height={14} /></button>
                                         <button className="btn-track-dl" onClick={() => playTrack(String(track.id), track.title, artist.name, cover, track.album?.id ? String(track.album.id) : undefined, artist.tracks?.items)} title={t('action_play')}><Icons.Play width={14} height={14} /></button>
+                                        <FavoriteButton kind="track" id={String(track.id)} />
                                     </div>
                                 </div>
                             );
@@ -406,6 +411,7 @@ export const ArtistDetailView: React.FC = () => {
                                             <Icons.Download width={14} height={14} />
                                         </button>
                                         <button className="btn-track-dl" onClick={(e) => { e.stopPropagation(); addToBatchStaging('album', String(album.id)); }} title={t('menu_batch')}><Icons.Batch width={14} height={14} /></button>
+                                        <FavoriteButton kind="album" id={String(album.id)} />
                                     </div>
                                 </div>
                             );

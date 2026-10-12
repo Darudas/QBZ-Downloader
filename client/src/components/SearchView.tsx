@@ -6,6 +6,8 @@ import { useLanguage } from '../contexts/LanguageContext';
 import { useQueueActions } from '../hooks/useQueueActions';
 import { playTrack } from './Player';
 import { Icons } from './Icons';
+import { FavoriteButton } from './FavoriteButton';
+import { AddToPlaylistModal } from './AddToPlaylistModal';
 
 interface SearchResultItem {
     id: string;
@@ -44,6 +46,7 @@ export const SearchView: React.FC = () => {
     const [suggestions, setSuggestions] = useState<{ artists: any[], albums: any[], tracks: any[] } | null>(null);
     const [showSuggestions, setShowSuggestions] = useState(false);
     const [hiResOnly, setHiResOnly] = useState(false);
+    const [playlistTarget, setPlaylistTarget] = useState<{ trackIds?: string[]; albumId?: string; label: string } | null>(null);
 
     const isMount = useRef(true);
 
@@ -484,9 +487,21 @@ export const SearchView: React.FC = () => {
                                                         {itemType === 'track' && <button className="btn-track-dl" onClick={(e) => { e.stopPropagation(); playTrack(item.id, title, artistName, cover, item.album?.id, filteredResults); }} title={t('action_play')}><Icons.Play width={14} height={14} /></button>}
                                                         <button className="btn-track-dl" onClick={(e) => { e.stopPropagation(); addToBatchStaging(itemType, item.id); }} title={t('menu_batch')}><Icons.Batch width={14} height={14} /></button>
                                                         {itemType === 'track' && <button className="btn-track-dl" onClick={(e) => { e.stopPropagation(); downloadLyrics(item.id); }} title="Download Lyrics"><Icons.Mic width={14} height={14} /></button>}
+                                                        <button
+                                                            className="btn-track-dl"
+                                                            onClick={(e) => { e.stopPropagation(); setPlaylistTarget(itemType === 'track' ? { trackIds: [String(item.id)], label: title } : { albumId: String(item.id), label: title }); }}
+                                                            title={t('title_add_to_playlist')}
+                                                            aria-label={t('title_add_to_playlist')}
+                                                        >
+                                                            <Icons.ListPlus width={14} height={14} />
+                                                        </button>
+                                                        <FavoriteButton kind={itemType === 'track' ? 'track' : 'album'} id={String(item.id)} />
                                                     </>
                                                 ) : (
-                                                    <button className="btn-track-dl" style={{ fontSize: '12px', padding: '4px 10px' }}>{t('action_view')}</button>
+                                                    <>
+                                                        <FavoriteButton kind="artist" id={String(item.id)} />
+                                                        <button className="btn-track-dl" style={{ fontSize: '12px', padding: '4px 10px' }}>{t('action_view')}</button>
+                                                    </>
                                                 )}
                                             </div>
                                         </div>
@@ -549,6 +564,11 @@ export const SearchView: React.FC = () => {
                                                     )}
                                                 </>
                                             )}
+                                            <FavoriteButton
+                                                kind={itemType === 'artist' ? 'artist' : itemType === 'track' ? 'track' : 'album'}
+                                                id={String(item.id)}
+                                                className="grid-action-btn"
+                                            />
                                         </div>
                                     </div>
                                 );
@@ -557,6 +577,14 @@ export const SearchView: React.FC = () => {
                     </div>
                 )}
             </div>
+
+            <AddToPlaylistModal
+                isOpen={playlistTarget !== null}
+                onClose={() => setPlaylistTarget(null)}
+                {...(playlistTarget?.trackIds ? { trackIds: playlistTarget.trackIds } : {})}
+                {...(playlistTarget?.albumId ? { albumId: playlistTarget.albumId } : {})}
+                {...(playlistTarget ? { label: playlistTarget.label } : {})}
+            />
 
             {!loading && total > limit && (
                 <div id="search-pagination" className="pagination">
