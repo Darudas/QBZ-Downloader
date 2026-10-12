@@ -66,16 +66,34 @@ const tempPathFor = (filePath: string): string =>
     // Ends in .tmp so the library scanner never indexes it.
     `${filePath}.qbz-edit-${process.pid}-${randomBytes(4).toString('hex')}.tmp`;
 
+/**
+ * Writes `data` to a temporary file next to the real file and renames it over
+ * it. A symlink is followed, so its target is edited and the link stays; the
+ * original permissions and (where allowed, e.g. Docker with PUID) owner are
+ * copied, because the rename would otherwise leave a default-mode file.
+ */
 function replaceAtomically(filePath: string, data: Buffer): void {
-    const tmp = tempPathFor(filePath);
-    fs.writeFileSync(tmp, data);
+    const target = fs.realpathSync(filePath);
+    const original = fs.statSync(target);
+    const tmp = tempPathFor(target);
+    fs.writeFileSync(tmp, data, { mode: original.mode & 0o7777 });
     try {
-        fs.renameSync(tmp, filePath);
+        fs.chmodSync(tmp, original.mode & 0o7777);
+        try {
+            fs.chownSync(tmp, original.uid, original.gid);
+        } catch {
+            /* not permitted (not root): the file keeps the current user, as before */
+        }
+        fs.renameSync(tmp, target);
     } catch (error) {
         try {
             fs.unlinkSync(tmp);
         } catch {
             /* ignore */
+        }
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === 'EBUSY' || code === 'EPERM') {
+            throw new ValidationError('The file is in use by another program; close it and try again');
         }
         throw error;
     }

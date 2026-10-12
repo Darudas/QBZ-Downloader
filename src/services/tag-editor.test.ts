@@ -3,6 +3,8 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import NodeID3 from 'node-id3';
+import { execFileSync } from 'child_process';
+import ffmpegPath from 'ffmpeg-static';
 import { patchFlacComments, patchTags, readFlacComments } from './tag-editor.js';
 
 const block = (type: number, payload: Buffer, last = false): Buffer => {
@@ -95,6 +97,41 @@ describe('tag-editor', () => {
         expect(parsed.audio.equals(AUDIO)).toBe(true);
         expect(fs.readdirSync(dir)).toEqual(['a.flac']);
     });
+
+    it('edits the target of a symlink, keeps the link and the file permissions', () => {
+        const real = path.join(dir, 'real.flac');
+        const link = path.join(dir, 'link.flac');
+        fs.writeFileSync(real, flacFile(['TITLE=Old']));
+        fs.chmodSync(real, 0o640);
+        fs.symlinkSync(real, link);
+
+        patchTags(link, { title: 'New' });
+
+        expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+        expect(readFlacComments(real).TITLE).toEqual(['New']);
+        expect(fs.statSync(real).mode & 0o777).toBe(0o640);
+        expect(fs.readdirSync(dir).sort()).toEqual(['link.flac', 'real.flac']);
+    });
+
+    it.skipIf(!ffmpegPath || !fs.existsSync(String(ffmpegPath)))(
+        'keeps the decoded audio of a real FLAC identical when tags grow and shrink',
+        () => {
+            const ffmpeg = String(ffmpegPath);
+            const file = path.join(dir, 'real.flac');
+            execFileSync(ffmpeg, ['-v', 'error', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=0.5', '-metadata', 'TITLE=Old', file]);
+            const audioMd5 = () =>
+                execFileSync(ffmpeg, ['-v', 'error', '-i', file, '-map', '0:a', '-f', 'md5', '-']).toString().trim();
+            const before = audioMd5();
+
+            patchTags(file, { title: 'x'.repeat(5000), comment: 'grown' });
+            expect(readFlacComments(file).TITLE).toEqual(['x'.repeat(5000)]);
+            expect(audioMd5()).toBe(before);
+
+            patchTags(file, { title: 'Short', comment: '' });
+            expect(readFlacComments(file).TITLE).toEqual(['Short']);
+            expect(audioMd5()).toBe(before);
+        }
+    );
 
     it('removes a tag when the new value is empty', () => {
         const file = path.join(dir, 'b.flac');
