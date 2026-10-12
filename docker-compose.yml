@@ -19,7 +19,7 @@ services:
       # anything changed in the dashboard afterwards takes precedence.
       # MAX_CONCURRENCY: "2"
       # EMBED_LYRICS: "true"
-      # FOLDER_STRUCTURE: "{albumArtist}/{album}/{disc_folder}"
+      # FOLDER_TEMPLATE: "{albumArtist}/{album}/{disc_folder}"
     volumes:
       # Database, settings and the encryption key.
       - ./data:/app/data
