@@ -9,7 +9,12 @@ const mocks = vi.hoisted(() => ({
     deleteTheme: vi.fn(),
     applyTheme: vi.fn(),
     resetTheme: vi.fn(),
-    normalizePasswordForAuth: vi.fn()
+    normalizePasswordForAuth: vi.fn(),
+    loadFavorites: vi.fn()
+}));
+
+vi.mock('../../stores/favoritesStore', () => ({
+    useFavoritesStore: { getState: () => ({ load: mocks.loadFavorites }) }
 }));
 
 vi.mock('../../utils/api', () => ({
@@ -171,6 +176,8 @@ describe('SettingsView', () => {
             });
         });
         expect(mocks.showToast).toHaveBeenCalledWith('Updated!', 'success');
+        // Another account may now be active: favorite ids are reloaded.
+        expect(mocks.loadFavorites).toHaveBeenCalledWith(true);
     });
 
     it('submits changed application settings and hashes a new dashboard password', async () => {

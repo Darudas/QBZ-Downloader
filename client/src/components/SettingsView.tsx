@@ -8,6 +8,7 @@ import { Icons } from './Icons';
 import { McpSettingsSection } from './McpSettingsSection';
 import { FavoritesSyncSettingsSection } from './FavoritesSyncSettingsSection';
 import { normalizePasswordForAuth } from '../utils/crypto';
+import { useFavoritesStore } from '../stores/favoritesStore';
 
 interface AppSettings {
     QOBUZ_APP_ID: string;
@@ -205,6 +206,8 @@ export const SettingsView: React.FC = () => {
                     showToast(data.message || 'Updated!', 'success');
                     setForm({ appId: '', appSecret: '', token: '', userId: '' });
                     loadSettings();
+                    // New credentials may belong to another Qobuz account: refresh the hearts.
+                    void useFavoritesStore.getState().load(true);
                 } else {
                     showToast(data.error || 'Update failed', 'error');
                 }

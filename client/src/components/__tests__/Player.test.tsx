@@ -83,7 +83,13 @@ describe('Player', () => {
         render(<Player />);
         fireEvent.click(screen.getByLabelText('action_favorite'));
         await waitFor(() => expect(screen.getByLabelText('action_favorite')).toHaveAttribute('aria-pressed', 'true'));
+        await waitFor(() => expect(mocks.showToast).toHaveBeenCalledWith('msg_favorite_added', 'success'));
         expect(calls.find((c) => c.method === 'POST' && c.url === '/api/favorites')?.body).toEqual({ trackIds: ['1'] });
+        // The favorite ids load that started on mount must not undo the click.
+        await waitFor(() => expect(calls.some((c) => c.url === '/api/favorites/ids')).toBe(true));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(screen.getByLabelText('action_favorite')).toHaveAttribute('aria-pressed', 'true');
+        expect(screen.getByLabelText('action_favorite')).toHaveAttribute('title', 'action_unfavorite');
     });
 
     it('reports a failed download instead of success', async () => {
