@@ -598,9 +598,9 @@ describe('stdio bridge (end to end)', () => {
         stdoutLines: () => string[];
     };
 
-    function startBridge(token: string): Bridge {
+    function startBridge(token: string, env: Record<string, string> = {}): Bridge {
         const child = spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', bridgePath], {
-            env: { ...process.env, QBZ_MCP_URL: `${base()}/mcp`, QBZ_MCP_TOKEN: token },
+            env: { ...process.env, QBZ_MCP_URL: `${base()}/mcp`, QBZ_MCP_TOKEN: token, ...env },
             stdio: ['pipe', 'pipe', 'pipe']
         });
         let buffer = '';
@@ -686,6 +686,35 @@ describe('stdio bridge (end to end)', () => {
         expect(await bridge.exit).toBe(0);
         const ids = bridge.stdoutLines().map((l) => (JSON.parse(l) as { id?: number }).id);
         expect(ids).toEqual(expect.arrayContaining([1, 2]));
+    }, 20_000);
+
+    const hangingSearch = async () => {
+        const { qobuzApi } = await import('../api/qobuz.js');
+        vi.mocked(qobuzApi.search).mockImplementationOnce(() => new Promise(() => {}));
+    };
+    const slowCall = { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'search_catalog', arguments: { query: 'slow' } } };
+
+    it('stops waiting for a cancelled request when stdin closes', async () => {
+        await hangingSearch();
+        const bridge = startBridge(await newToken());
+        bridge.send(initialize);
+        await bridge.response(1);
+        bridge.send(slowCall);
+        bridge.send({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 2, reason: 'user' } });
+        bridge.end();
+        const started = Date.now();
+        expect(await bridge.exit).toBe(0);
+        expect(Date.now() - started).toBeLessThan(10_000);
+    }, 20_000);
+
+    it('exits non-zero when requests are left unanswered', async () => {
+        await hangingSearch();
+        const bridge = startBridge(await newToken(), { QBZ_MCP_DRAIN_TIMEOUT_MS: '300' });
+        bridge.send(initialize);
+        await bridge.response(1);
+        bridge.send(slowCall);
+        bridge.end();
+        expect(await bridge.exit).toBe(1);
     }, 20_000);
 
     it('reports a rejected token as a JSON-RPC error', async () => {

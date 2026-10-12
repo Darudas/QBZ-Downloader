@@ -13,8 +13,11 @@ import {
     type RequestId
 } from '@modelcontextprotocol/client';
 
-/** How long to wait for answers to requests still in flight when stdin closes. */
-const DRAIN_TIMEOUT_MS = 30_000;
+/** How long to wait for answers to requests still in flight when stdin closes (env override for tests). */
+const DRAIN_TIMEOUT_MS = (() => {
+    const raw = Number.parseInt(process.env.QBZ_MCP_DRAIN_TIMEOUT_MS ?? '', 10);
+    return Number.isFinite(raw) && raw >= 100 && raw <= 300_000 ? raw : 30_000;
+})();
 
 const url = new URL(process.env.QBZ_MCP_URL ?? 'http://127.0.0.1:3000/mcp');
 const token = process.env.QBZ_MCP_TOKEN;
@@ -48,6 +51,7 @@ function emit(msg: JSONRPCMessage): void {
     void done.finally(() => writes.delete(done));
 }
 
+/** Exit code 1 when the bridge ends because something went wrong. */
 async function shutdown(code = 0): Promise<void> {
     if (closing) return;
     closing = true;
@@ -67,8 +71,16 @@ stdio.onmessage = (msg: JSONRPCMessage) => {
         inFlight.add(msg.id);
         if (msg.method === 'initialize') initIds.add(msg.id);
     } else if (isJSONRPCNotification(msg) && msg.method === 'notifications/cancelled') {
+        // A cancelled request gets no answer: stop waiting for it once the
+        // cancellation is forwarded, so closing stdin does not hang on it.
         const id = (msg.params as { requestId?: RequestId } | undefined)?.requestId;
-        if (id !== undefined) inFlight.delete(id);
+        if (id !== undefined) {
+            void http
+                .send(msg)
+                .catch((err: unknown) => log(`forward failed: ${err instanceof Error ? err.message : String(err)}`))
+                .finally(() => settle(id));
+            return;
+        }
     }
     http.send(msg).catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
@@ -93,7 +105,12 @@ http.onmessage = (msg: JSONRPCMessage) => {
 };
 http.onerror = (e) => log(`http: ${e.message}`);
 stdio.onerror = (e) => log(`stdio: ${e.message}`);
-http.onclose = () => void shutdown(0);
+// Only shutdown() closes the HTTP transport; closing on its own is a failure.
+http.onclose = () => {
+    if (closing) return;
+    log('HTTP transport closed unexpectedly');
+    void shutdown(1);
+};
 // Fired when stdin ends or closes: finish the requests still in flight, then exit.
 stdio.onclose = () => {
     if (stdinClosed) return;
@@ -104,11 +121,21 @@ stdio.onclose = () => {
     }
     setTimeout(() => {
         log(`exiting with ${inFlight.size} unanswered request(s)`);
-        void shutdown(0);
+        void shutdown(1);
     }, DRAIN_TIMEOUT_MS).unref();
 };
 process.on('SIGINT', () => void shutdown(0));
 process.on('SIGTERM', () => void shutdown(0));
+const fatal = (what: string) => (err: unknown) => {
+    log(`${what}: ${err instanceof Error ? err.message : String(err)}`);
+    void shutdown(1);
+};
+process.on('uncaughtException', fatal('fatal error'));
+process.on('unhandledRejection', fatal('unhandled rejection'));
 
-await http.start();
-await stdio.start();
+try {
+    await http.start();
+    await stdio.start();
+} catch (err: unknown) {
+    fatal('could not start')(err);
+}
