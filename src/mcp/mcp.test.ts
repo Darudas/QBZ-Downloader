@@ -44,6 +44,8 @@ vi.mock('../services/database/index.js', () => ({
     databaseService: {
         hasTrack: () => false,
         getTrack: (id: string) => (id === '1' ? { file_path: __filename, quality: 27 } : undefined),
+        getTracksByIds: (ids: string[]) => (ids.includes('1') ? [{ id: '1', file_path: __filename, quality: 27 }] : []),
+        getTracksByAlbumId: () => [{ id: '7', file_path: __filename }],
         getDuplicates: () => [{ id: 3, file_path_1: '/music/a.flac', file_path_2: '/music/b.flac', match_type: 'exact' }],
         getDb: () => ({
             prepare: (sql: string) => ({

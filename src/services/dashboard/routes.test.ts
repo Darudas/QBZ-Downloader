@@ -206,6 +206,9 @@ vi.mock('../database/index.js', () => ({
         addLibraryFile: vi.fn(),
         getAlbum: vi.fn().mockReturnValue(null),
         hasTrack: vi.fn().mockReturnValue(false),
+        getTrack: vi.fn().mockReturnValue(undefined),
+        getTracksByIds: vi.fn().mockReturnValue([]),
+        getTracksByAlbumId: vi.fn().mockReturnValue([]),
         getPluginConfigs: vi.fn().mockReturnValue([]),
         getPluginConfig: vi.fn((id: string) => ({
             id,
@@ -320,6 +323,8 @@ import { registerRoutes } from './routes.js';
 import { downloadQueue } from '../queue/queue.js';
 import { queueProcessor } from '../queue-processor.js';
 import { validateEnvironment } from '../../utils/env.js';
+import { databaseService } from '../database/index.js';
+import qobuzApiMock from '../../api/qobuz.js';
 
 describe('Dashboard API Routes', () => {
     let app: Express;
@@ -604,6 +609,55 @@ describe('Dashboard API Routes', () => {
 
             expect(res.status).toBe(200);
             expect(res.body.id).toBe('12345');
+            expect(res.body.already_downloaded).toBe(false);
+            expect(res.body.library_status).toBe('missing');
+        });
+
+        it('flags albums and tracks from the files on disk, not the albums table', async () => {
+            // __filename exists on disk; the other path does not.
+            vi.mocked(databaseService.getTracksByAlbumId).mockReturnValue([
+                { id: 't1', file_path: __filename },
+                { id: 't2', file_path: '/nope/missing.flac' }
+            ] as never);
+            vi.mocked(databaseService.getTrack).mockImplementation(
+                (id: string) => (id === 't1' ? { id: 't1', file_path: __filename } : undefined) as never
+            );
+            vi.mocked(qobuzApiMock.getAlbum).mockResolvedValueOnce({
+                success: true,
+                data: {
+                    id: '12345',
+                    title: 'Test Album',
+                    tracks_count: 2,
+                    tracks: { items: [{ id: 't1' }, { id: 't2' }] }
+                }
+            } as never);
+
+            const partial = await request(app).get('/api/album/12345');
+            expect(partial.body.already_downloaded).toBe(false);
+            expect(partial.body.library_status).toBe('partial');
+            expect(partial.body.downloaded_tracks).toBe(1);
+            expect(partial.body.tracks.items.map((t: { already_downloaded: boolean }) => t.already_downloaded)).toEqual([
+                true,
+                false
+            ]);
+
+            vi.mocked(qobuzApiMock.search).mockResolvedValueOnce({
+                success: true,
+                data: { albums: { items: [{ id: 'a1', tracks_count: 1 }, { id: 'a2', tracks_count: 3 }] } }
+            } as never);
+            vi.mocked(databaseService.getTracksByAlbumId).mockImplementation(
+                (albumId: string) => (albumId === 'a1' ? [{ id: 't1', file_path: __filename }] : []) as never
+            );
+            const search = await request(app).get('/api/search').query({ query: 'x', type: 'albums' });
+            expect(search.body.albums.items.map((a: { already_downloaded: boolean; library_status: string }) => [
+                a.already_downloaded,
+                a.library_status
+            ])).toEqual([
+                [true, 'complete'],
+                [false, 'missing']
+            ]);
+            vi.mocked(databaseService.getTracksByAlbumId).mockReset().mockReturnValue([]);
+            vi.mocked(databaseService.getTrack).mockReset().mockReturnValue(undefined);
         });
     });
 

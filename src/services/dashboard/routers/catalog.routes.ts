@@ -1,11 +1,11 @@
 import { Router, Request, Response } from 'express';
-import { existsSync } from 'fs';
 import { z } from 'zod';
 import qobuzApi from '../../../api/qobuz.js';
 import { databaseService } from '../../database/index.js';
 import { historyService } from '../../history.js';
 import { playlistWatcherService } from '../../PlaylistWatcherService.js';
 import { downloadQualitySchema } from '../../download-actions.js';
+import { albumStatus, isTrackInLibrary } from '../../library-lookup.js';
 import { parseBody, parseParams, parseQuery, routeErrorHandler } from './route-utils.js';
 
 const router = Router();
@@ -86,23 +86,27 @@ const itemsOf = (value: unknown): Item[] | undefined => {
 };
 
 /** A track counts as downloaded only while its file is still on disk. */
-function isTrackDownloaded(trackId: string): boolean {
-    if (!databaseService.hasTrack(trackId)) return false;
-    const row = databaseService.getTrack?.(trackId);
-    const filePath = row?.file_path;
-    return typeof filePath === 'string' && filePath.length > 0 && existsSync(filePath);
-}
-
 function flagTracks(items: Item[] | undefined): void {
     items?.forEach((item) => {
-        item.already_downloaded = isTrackDownloaded(String(item.id));
+        item.already_downloaded = isTrackInLibrary(String(item.id));
     });
+}
+
+/**
+ * An album counts as downloaded when every one of its Qobuz tracks is on
+ * disk; `library_status` also tells partial albums apart. (The `albums` table
+ * is never written, so it cannot be used for this.)
+ */
+function flagAlbum(item: Item): void {
+    const total = typeof item.tracks_count === 'number' ? item.tracks_count : itemsOf(item.tracks)?.length;
+    const info = albumStatus(String(item.id), total);
+    item.already_downloaded = info.status === 'complete';
+    item.library_status = info.status;
+    item.downloaded_tracks = info.downloaded;
 }
 
 function flagAlbums(items: Item[] | undefined): void {
-    items?.forEach((item) => {
-        item.already_downloaded = !!databaseService.getAlbum(String(item.id));
-    });
+    items?.forEach(flagAlbum);
 }
 
 /* ------------------------------------------------------------------ */
@@ -152,7 +156,7 @@ router.get('/album/:id', async (req: Request, res: Response) => {
     }
 
     const data = result.data as unknown as Item;
-    data.already_downloaded = !!databaseService.getAlbum(String(data.id));
+    flagAlbum(data);
     flagTracks(itemsOf(data.tracks));
     res.json(data);
 });

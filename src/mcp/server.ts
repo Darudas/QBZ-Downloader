@@ -21,7 +21,7 @@ import { validateEnvironment } from '../utils/env.js';
 import { isPathWithinManagedRoots } from '../utils/paths.js';
 import { queueLibraryUpgrade } from '../services/library-upgrade.js';
 import { retagFileFromQobuz } from '../services/metadata-repair.js';
-import fs from 'fs';
+import { checkAlbums, checkTracks, searchLocalLibrary } from '../services/library-lookup.js';
 import { ForbiddenError, NotFoundError, toSafeErrorPayload } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 import {
@@ -365,14 +365,6 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
 
     /* ------------------------ local library ----------------------- */
 
-    const fileExists = (p: unknown): boolean => {
-        try {
-            return typeof p === 'string' && fs.statSync(p).isFile();
-        } catch {
-            return false;
-        }
-    };
-
     tool('check_in_library', 'read', {
         title: 'Already downloaded?',
         description:
@@ -384,51 +376,29 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         }),
         annotations: READ
     }, async ({ track_ids, album_ids }) => {
-        const tracks: Record<string, { in_library: boolean; quality?: number | null }> = {};
-        for (const id of track_ids ?? []) {
-            const row = databaseService.getTrack(String(id)) as { file_path?: string; quality?: number } | undefined;
-            const present = Boolean(row) && fileExists(row?.file_path);
-            tracks[String(id)] = present ? { in_library: true, quality: row?.quality ?? null } : { in_library: false };
-        }
-        const albums: Record<string, { status: 'complete' | 'partial' | 'missing'; downloaded: number; total: number | null }> = {};
-        const stmt = databaseService.getDb().prepare('SELECT file_path FROM tracks WHERE album_id = ?');
-        for (const id of album_ids ?? []) {
-            const rows = stmt.all(id) as Array<{ file_path: string | null }>;
-            const downloaded = rows.filter((r) => fileExists(r.file_path)).length;
-            let total: number | null = null;
-            try {
-                const album = await qobuzApi.getAlbum(id);
-                total = typeof album.data?.tracks_count === 'number' ? album.data.tracks_count : null;
-            } catch {
-                total = null;
-            }
-            const status = downloaded === 0 ? 'missing' : total !== null && downloaded >= total ? 'complete' : 'partial';
-            albums[id] = { status, downloaded, total };
-        }
+        const tracks = Object.fromEntries(
+            Object.entries(checkTracks(track_ids ?? [])).map(([id, info]) => [
+                id,
+                info.in_library ? { in_library: true, quality: info.quality ?? null } : { in_library: false }
+            ])
+        );
+        const albums = await checkAlbums(album_ids ?? []);
         return { tracks, albums };
     });
 
     tool('search_local_library', 'read', {
         title: 'Search local library',
-        description: 'Search tracks downloaded by this app by title, artist or album (max 100 results).',
-        inputSchema: z.object({ query: z.string().trim().min(1).max(200), limit: limit(25) }),
+        description:
+            'Search the local library by title, artist or album. source=tracks (default) covers downloads made by this app ' +
+            '(with Qobuz ids); source=files covers every file the library scan indexed.',
+        inputSchema: z.object({
+            query: z.string().trim().min(1).max(200),
+            source: z.enum(['tracks', 'files']).default('tracks').describe('tracks (app downloads) or files (scanned files)'),
+            limit: limit(25),
+            offset
+        }),
         annotations: READ_LOCAL
-    }, ({ query, limit: lim }) => {
-        const rows = databaseService.searchTracks(query) as unknown as Array<Record<string, unknown>>;
-        return {
-            items: rows.slice(0, lim).map((r) => ({
-                track_id: r.id,
-                title: r.title,
-                artist: r.artist,
-                album: r.album,
-                album_id: r.album_id,
-                quality: r.quality,
-                on_disk: fileExists(r.file_path),
-                file_path: r.file_path
-            })),
-            total: rows.length
-        };
-    });
+    }, ({ query, source, limit: lim, offset: off }) => searchLocalLibrary(query, { source, limit: lim, offset: off }));
 
     tool('list_duplicates', 'read', {
         title: 'Duplicates',

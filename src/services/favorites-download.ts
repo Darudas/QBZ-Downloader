@@ -1,4 +1,4 @@
-import { databaseService } from './database/index.js';
+import { albumStatus, isTrackInLibrary } from './library-lookup.js';
 import { downloadActionsService } from './download-actions.js';
 import { qobuzLibraryService } from './qobuz-library/service.js';
 
@@ -7,7 +7,7 @@ export type FavoritesDownloadType = 'albums' | 'tracks' | 'all';
 export interface FavoritesDownloadResult {
     queued: number;
     deduped: number;
-    /** Tracks skipped because they are already in the library. */
+    /** Tracks and complete albums skipped because they are already in the library. */
     skipped: number;
     failed: number;
 }
@@ -17,9 +17,10 @@ export const MAX_FAVORITES_PER_DOWNLOAD = 2000;
 const PAGE = 100;
 
 /**
- * Queues the user's favorite albums and/or tracks. Tracks already in the
- * library are skipped; albums are queued and the processor skips files that
- * already exist. Used by the REST route and the MCP tool.
+ * Queues the user's favorite albums and/or tracks. Tracks on disk and albums
+ * whose every track is on disk are skipped; partial albums are queued and the
+ * processor skips the files that already exist. Used by the REST route and
+ * the MCP tool.
  */
 export async function downloadFavorites(
     type: FavoritesDownloadType,
@@ -34,9 +35,13 @@ export async function downloadFavorites(
     for (const kind of kinds) {
         for (let offset = 0; offset < MAX_FAVORITES_PER_DOWNLOAD; offset += PAGE) {
             const page = await qobuzLibraryService.listFavorites(kind, { limit: PAGE, offset });
-            for (const item of page.items as Array<{ id: string | number }>) {
+            for (const item of page.items as Array<{ id: string | number; tracks_count?: number }>) {
                 const id = String(item.id);
-                if (kind === 'tracks' && databaseService.hasTrack(id)) {
+                const present =
+                    kind === 'tracks'
+                        ? isTrackInLibrary(id)
+                        : albumStatus(id, item.tracks_count).status === 'complete';
+                if (present) {
                     result.skipped++;
                     continue;
                 }

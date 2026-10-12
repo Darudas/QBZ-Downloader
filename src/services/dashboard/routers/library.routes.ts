@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { z } from 'zod';
 import { databaseService } from '../../database/index.js';
 import { libraryScannerService } from '../../library-scanner/index.js';
 import { libraryStatisticsService } from '../../LibraryStatisticsService.js';
@@ -19,6 +20,14 @@ import {
     countTracksForFilter,
     tracksForFilter
 } from '../../smart-playlists.js';
+import {
+    checkAlbums,
+    checkTracks,
+    MAX_LOOKUP_ALBUM_IDS,
+    MAX_LOOKUP_TRACK_IDS,
+    searchLocalLibrary
+} from '../../library-lookup.js';
+import { parseQuery, routeErrorHandler } from './route-utils.js';
 
 const router = Router();
 
@@ -35,6 +44,37 @@ const getPageParam = (raw: unknown, fallback: number, max: number): number => {
 };
 
 const MAX_PAGE_SIZE = 1000;
+
+/** Query values may come as `?trackIds=1,2` or repeated `?trackIds=1&trackIds=2`. */
+const idList = (pattern: RegExp, max: number, what: string) =>
+    z
+        .union([z.string(), z.array(z.string())])
+        .optional()
+        .transform((value) =>
+            value === undefined
+                ? []
+                : (Array.isArray(value) ? value : [value])
+                      .flatMap((part) => part.split(','))
+                      .map((part) => part.trim())
+                      .filter(Boolean)
+        )
+        .pipe(z.array(z.string().regex(pattern, `Invalid ${what}`)).max(max, `At most ${max} ${what}s`));
+
+const lookupQuery = z
+    .object({
+        trackIds: idList(/^\d{1,20}$/, MAX_LOOKUP_TRACK_IDS, 'track id'),
+        albumIds: idList(/^[A-Za-z0-9]{1,40}$/, MAX_LOOKUP_ALBUM_IDS, 'album id')
+    })
+    .refine((value) => value.trackIds.length + value.albumIds.length > 0, {
+        message: 'trackIds or albumIds is required'
+    });
+
+const searchQuery = z.object({
+    q: z.string().trim().min(1, 'Query parameter "q" is required').max(200),
+    source: z.enum(['tracks', 'files']).default('tracks'),
+    limit: z.coerce.number().int().min(1).max(100).default(25),
+    offset: z.coerce.number().int().min(0).max(1_000_000).default(0)
+});
 
 router.get('/scan/status', async (req: Request, res: Response) => {
     const stats = libraryScannerService.getScanStats();
@@ -64,6 +104,21 @@ router.post('/upgrade', (req: Request, res: Response) => {
         logger.error(`Library upgrade failed: ${(error as Error).message}`, 'LIBRARY');
         res.status(500).json({ error: 'Failed to queue upgrade' });
     }
+});
+
+/**
+ * Searches the local library. `source=tracks` (default): downloads made by
+ * this app, with Qobuz ids. `source=files`: everything the scanner indexed.
+ */
+router.get('/search', (req: Request, res: Response) => {
+    const { q, source, limit, offset } = parseQuery(searchQuery, req.query);
+    res.json(searchLocalLibrary(q, { source, limit, offset }));
+});
+
+/** "Already in the library?" for Qobuz track and album ids (file on disk, albums complete/partial/missing). */
+router.get('/lookup', async (req: Request, res: Response) => {
+    const { trackIds, albumIds } = parseQuery(lookupQuery, req.query);
+    res.json({ tracks: checkTracks(trackIds), albums: await checkAlbums(albumIds) });
 });
 
 router.post('/scan', (req: Request, res: Response) => {
@@ -378,5 +433,7 @@ router.get('/smart-playlists/:id/tracks', (req: Request, res: Response) => {
     }
     res.json(tracksForFilter(filter));
 });
+
+router.use(routeErrorHandler('library'));
 
 export default router;
