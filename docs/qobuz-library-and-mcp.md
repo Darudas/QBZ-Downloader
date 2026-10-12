@@ -260,7 +260,7 @@ Conventions for every tool:
   responses, tool gating per group, `confirm`, and tool calls.
 - **Still open in B2:**
   - tools that depend on A3/B1 services: `check_in_library`, `search_local_library`, duplicates,
-    upgrades, metadata edits, smart playlists, safe settings read/write, notifications,
+    upgrades, metadata edits, smart playlists, notifications,
     `download_purchases`, `download_lyrics`;
   - resources and prompts;
   - a Host-header check for loopback binds;
@@ -279,36 +279,46 @@ Conventions for every tool:
 - The `already_downloaded` flags should use the planned `libraryLookupService` (track row plus file on
   disk). Today they use the `tracks` table, and the `albums` table is never written.
 
-**A3: settings, library, server hardening (not started)**
+**A3: settings, library, server hardening (settings/server/path parts done)**
 
-*Config and settings*
-- `src/config.ts`:
-  - Add the `CONFIG.mcp` and `CONFIG.favorites` getters.
-- `src/services/settings.ts`:
-  - Register the new keys.
-  - ~~`set`/`setMany` must refuse unknown keys~~ **done**: they throw on any key outside
-    `KNOWN_SETTING_KEYS`, and `MCP_TOKEN_*` is never mirrored to or imported from `process.env`.
-  - Do not mirror secret keys into `process.env`.
-  - Environment variables must not overwrite `MCP_TOKEN_*`.
-- New `src/services/settings-schema.ts`:
-  - The REST allowlist with per-key validation: ranges, enums, and templates without `..`.
-  - `getSafeSettings()` / `applySafeSettings()` for MCP. Read: no secrets, paths, URLs or user id. Write: a
-    small allowlist only.
+*Config and settings* **done**
+- ~~`src/config.ts`: `CONFIG.mcp` and `CONFIG.favorites` getters~~ **done**: `CONFIG.mcp` is
+  `{enabled, permissions}` (no token hash); `CONFIG.favorites` is
+  `{autoDownload, types: ('albums'|'tracks')[], intervalHours}` (1–168). Allowed values live in
+  `src/config-values.ts` so partial `config.js` mocks keep working.
+- ~~`src/services/settings.ts`~~ **done**: the `FAVORITES_*` keys are registered; `set`/`setMany`
+  refuse unknown keys; secrets (`SENSITIVE_KEYS`) and `MCP_TOKEN_*` are no longer mirrored into
+  `process.env`, and the environment never overwrites `MCP_TOKEN_*`.
+- ~~New `src/services/settings-schema.ts`~~ **done**: a zod validator per writable key (ranges, enums,
+  booleans, quality whitelist, relative templates without `.`/`..` segments, no filesystem-root
+  paths, http(s) media-server URL). `getSafeSettings()` / `applySafeSettings()` back the MCP tools
+  `get_settings` (read) and `update_settings` (manage; allowlist: quality, concurrency 1–10, retries
+  0–10, bandwidth, cover/lyrics options, favorites auto-download). Config import validates values
+  too (invalid ones are skipped and reported) and never exports/imports `MCP_TOKEN_*`.
 
-*System routes (`system.routes.ts`)*
-- Validation and the new keys.
-- Cache `getUserInfo` instead of calling Qobuz on every `GET /settings`.
-- `POST /system/reset` should require `{confirm:'RESET'}`, and the client must be updated to send it.
-- Refuse clearing the dashboard password while the server is bound to a non-loopback address. Today that
-  leaves `0.0.0.0` open with no password.
+*System routes (`system.routes.ts`)* **done**
+- ~~Validation and the new keys~~: `POST /api/settings/update` answers 400 JSON for unknown,
+  read-only or invalid fields (MCP_*, `DASHBOARD_HOST`, `QOBUZ_ACCOUNTS` stay non-writable).
+  Lower-case field names, the aliases `app_id`/`token`/… and upper-case keys are accepted.
+  `GET /api/settings` also returns the `FAVORITES_*` values.
+- ~~Cache `getUserInfo`~~: 60 s (10 s on failure) under a user-scoped key with a credential
+  fingerprint; cleared on account switch, credential change, `token:invalid` and reset.
+- ~~`POST /system/reset` requires `{confirm:'RESET'}`~~; the client sends it.
+- ~~Refuse clearing the dashboard password on a non-loopback bind~~: the bound address is tracked in
+  `dashboard/bind-host.ts`.
 
-*Dashboard server (`dashboard/index.ts`)*
-- App-level JSON error middleware. Today, thrown errors become Express HTML pages with stack traces.
-- Count failed `x-password` attempts on all `/api` routes, not only on `/api/login`.
+*Dashboard server (`dashboard/index.ts`)* **done**
+- ~~App-level JSON error middleware~~: malformed JSON → 400 `INVALID_JSON`, oversized → 413, other
+  errors through `toSafeErrorPayload` (no HTML, no stack traces).
+- ~~Count failed `x-password` attempts on all `/api` routes~~: `PasswordGuessLimiter` counts
+  distinct wrong passwords (header or session cookie) per client on every protected route and
+  `/api/auth/verify`: 20 per 15 min, then 429 with `Retry-After` for any password-carrying request.
 
-*Path safety*
-- `FOLDER_TEMPLATE`/`FILE_TEMPLATE` containing `..` must not escape the download root.
-- `isPathWithinManagedRoots` must refuse filesystem-root roots (`/`, `C:\`).
+*Path safety* **done**
+- ~~`FOLDER_TEMPLATE`/`FILE_TEMPLATE` containing `..` must not escape the download root~~: rejected
+  on save, and rendering (`MetadataProcessor`) drops `.`/`..` segments, leading separators and drive
+  letters; `ensurePathSafety` asserts the final path is inside the base.
+- ~~`isPathWithinManagedRoots` must refuse filesystem-root roots~~: `getManagedRoots` ignores them.
 
 *Library scanner*
 - Exclude `*.qbz-part.*`, `*.qbz-backup-*` and `*.qbz-replace-*` files. Today they get indexed and can
@@ -362,7 +372,8 @@ Conventions for every tool:
   - HTTP tests for 401/404, foreign Origin, the Host guard, and checking that `GET /mcp` is not answered by
     the SPA;
   - a bridge end-to-end test.
-- Add `CONFIG.mcp` to the `CONFIG` mocks in `routes.test.ts` and `dashboard/index.test.ts`.
+- Add `CONFIG.mcp` to the `CONFIG` mocks in `routes.test.ts` and `dashboard/index.test.ts` once
+  code under test reads it (`routes.test.ts` already mocks `CONFIG.favorites`).
 
 **C1: dashboard UI**
 - New views:

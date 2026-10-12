@@ -42,10 +42,10 @@ Tools are grouped. A tool from a disabled group is not offered to the AI at all.
 
 | Group | Tools | Default |
 |---|---|---|
-| `read` | `get_status`, `get_account_info`, `search_catalog`, `resolve_qobuz_url`, `get_album`, `get_track`, `get_artist`, `get_artist_releases`, `get_similar_artists`, `get_playlist`, `get_label`, `get_featured_albums`, `get_featured_playlists`, `list_genres`, `list_favorites`, `check_favorites`, `list_my_playlists`, `list_purchases`, `get_queue`, `get_download_history`, `get_scan_status`, `check_in_library`, `search_local_library`, `list_duplicates`, `list_upgrade_candidates`, `list_missing_metadata` | always on |
+| `read` | `get_status`, `get_account_info`, `search_catalog`, `resolve_qobuz_url`, `get_album`, `get_track`, `get_artist`, `get_artist_releases`, `get_similar_artists`, `get_playlist`, `get_label`, `get_featured_albums`, `get_featured_playlists`, `list_genres`, `list_favorites`, `check_favorites`, `list_my_playlists`, `list_purchases`, `get_queue`, `get_download_history`, `get_scan_status`, `check_in_library`, `search_local_library`, `list_duplicates`, `list_upgrade_candidates`, `list_missing_metadata`, `get_settings` (download settings only: no paths, templates or credentials) | always on |
 | `library` | `add_favorites`, `remove_favorites`, `create_playlist`, `update_playlist`, `add_tracks_to_playlist`, `remove_tracks_from_playlist`, `follow_playlist`, `unfollow_playlist` | on |
 | `download` | `download`, `download_urls`, `download_favorites`, `control_queue`, `cancel_queue_item`, `retry_queue_item`, `set_queue_priority` | on |
-| `manage` | `start_library_scan`, `watch_playlist`, `sync_watched_playlists`, `queue_upgrade` (replaces the old file after the better one is downloaded), `retag_file_from_qobuz` (rewrites a file's tags and cover from a Qobuz track) | on |
+| `manage` | `start_library_scan`, `watch_playlist`, `sync_watched_playlists`, `queue_upgrade` (replaces the old file after the better one is downloaded), `retag_file_from_qobuz` (rewrites a file's tags and cover from a Qobuz track), `update_settings` (quality, concurrency, cover/lyrics options, favorites auto-download only) | on |
 | `destructive` | `delete_playlist`, `clear_pending_queue`, `resolve_duplicate` (deletes the worse file of a pair; refuses files outside the library folders). Each also needs `confirm: true` | **off** |
 
 To change the enabled groups (`read` is always on):
