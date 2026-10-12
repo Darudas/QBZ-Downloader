@@ -28,7 +28,9 @@ Related documents:
   - track/album/playlist/artist/label downloads, URL downloads, queue control
   - the arbitrary-file-deletion bug is fixed in `src/services/queue/upgrade-guard.ts`
 - **Local library**
-  - `src/services/library-upgrade.ts`: a server-side upgrade, used by REST and MCP
+  - `src/services/library-actions.ts`: server-side upgrade, duplicate resolution, file delete and
+    tag edits (keeps other tags and the cover), used by REST and MCP
+  - `src/services/library-lookup.ts`: "already downloaded" checks (file on disk) and local search
   - `src/services/metadata-repair.ts`: re-tags a file from a Qobuz track
   - the MCP tools `check_in_library`, `search_local_library`, `list_duplicates`, `resolve_duplicate`
     (with a containment check), `list_upgrade_candidates`, `queue_upgrade`, `list_missing_metadata` and
@@ -79,7 +81,7 @@ Related documents:
 4. **Phase A3 hardening**:
    - zod validation for `POST /api/settings/update`
    - `..` in folder/file templates
-   - temporary files in the library scanner
+   - ~~temporary files in the library scanner~~ done
    - a JSON error middleware
    - refuse clearing the password on a LAN bind
 

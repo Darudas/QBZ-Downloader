@@ -29,16 +29,15 @@ import { databaseService } from '../services/database/index.js';
 import { historyService } from '../services/history.js';
 import { libraryScannerService } from '../services/library-scanner/index.js';
 import { playlistWatcherService } from '../services/PlaylistWatcherService.js';
-import { isPathWithinManagedRoots } from '../utils/paths.js';
-import { queueLibraryUpgrade } from '../services/library-upgrade.js';
+import { queueUpgrade, resolveDuplicate } from '../services/library-actions.js';
 import { retagFileFromQobuz } from '../services/metadata-repair.js';
+import { checkAlbums, checkTracks, isTrackInLibrary, searchLocalLibrary } from '../services/library-lookup.js';
 import {
     applySafeSettings,
     getSafeSettings,
     safeSettingsUpdateSchema
 } from '../services/settings-schema.js';
-import fs from 'fs';
-import { ForbiddenError, NotFoundError, toSafeErrorPayload, ValidationError } from '../utils/errors.js';
+import { NotFoundError, toSafeErrorPayload, ValidationError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 import {
     APP_VERSION,
@@ -228,7 +227,7 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         const album = unwrap(await qobuzApi.getAlbum(album_id), 'album');
         const tracks = (album.tracks?.items ?? []).map((t) => ({
             ...toTrackSummary(t),
-            downloaded: databaseService.hasTrack(String(t.id))
+            downloaded: isTrackInLibrary(String(t.id))
         }));
         return { album: toAlbumSummary(album), tracks };
     });
@@ -240,7 +239,7 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         annotations: READ
     }, async ({ track_id }) => {
         const track = unwrap(await qobuzApi.getTrack(track_id), 'track');
-        return { track: toTrackSummary(track), downloaded: databaseService.hasTrack(String(track_id)) };
+        return { track: toTrackSummary(track), downloaded: isTrackInLibrary(String(track_id)) };
     });
 
     tool('get_artist', 'read', {
@@ -517,14 +516,6 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
 
     /* ------------------------ local library ----------------------- */
 
-    const fileExists = (p: unknown): boolean => {
-        try {
-            return typeof p === 'string' && fs.statSync(p).isFile();
-        } catch {
-            return false;
-        }
-    };
-
     tool('check_in_library', 'read', {
         title: 'Already downloaded?',
         description:
@@ -536,51 +527,29 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         }),
         annotations: READ
     }, async ({ track_ids, album_ids }) => {
-        const tracks: Record<string, { in_library: boolean; quality?: number | null }> = {};
-        for (const id of track_ids ?? []) {
-            const row = databaseService.getTrack(String(id)) as { file_path?: string; quality?: number } | undefined;
-            const present = Boolean(row) && fileExists(row?.file_path);
-            tracks[String(id)] = present ? { in_library: true, quality: row?.quality ?? null } : { in_library: false };
-        }
-        const albums: Record<string, { status: 'complete' | 'partial' | 'missing'; downloaded: number; total: number | null }> = {};
-        const stmt = databaseService.getDb().prepare('SELECT file_path FROM tracks WHERE album_id = ?');
-        for (const id of album_ids ?? []) {
-            const rows = stmt.all(id) as Array<{ file_path: string | null }>;
-            const downloaded = rows.filter((r) => fileExists(r.file_path)).length;
-            let total: number | null = null;
-            try {
-                const album = await qobuzApi.getAlbum(id);
-                total = typeof album.data?.tracks_count === 'number' ? album.data.tracks_count : null;
-            } catch {
-                total = null;
-            }
-            const status = downloaded === 0 ? 'missing' : total !== null && downloaded >= total ? 'complete' : 'partial';
-            albums[id] = { status, downloaded, total };
-        }
+        const tracks = Object.fromEntries(
+            Object.entries(checkTracks(track_ids ?? [])).map(([id, info]) => [
+                id,
+                info.in_library ? { in_library: true, quality: info.quality ?? null } : { in_library: false }
+            ])
+        );
+        const albums = await checkAlbums(album_ids ?? []);
         return { tracks, albums };
     });
 
     tool('search_local_library', 'read', {
         title: 'Search local library',
-        description: 'Search tracks downloaded by this app by title, artist or album (max 100 results).',
-        inputSchema: z.object({ query: z.string().trim().min(1).max(200), limit: limit(25) }),
+        description:
+            'Search the local library by title, artist or album. source=tracks (default) covers downloads made by this app ' +
+            '(with Qobuz ids); source=files covers every file the library scan indexed.',
+        inputSchema: z.object({
+            query: z.string().trim().min(1).max(200),
+            source: z.enum(['tracks', 'files']).default('tracks').describe('tracks (app downloads) or files (scanned files)'),
+            limit: limit(25),
+            offset
+        }),
         annotations: READ_LOCAL
-    }, ({ query, limit: lim }) => {
-        const rows = databaseService.searchTracks(query) as unknown as Array<Record<string, unknown>>;
-        return {
-            items: rows.slice(0, lim).map((r) => ({
-                track_id: r.id,
-                title: r.title,
-                artist: r.artist,
-                album: r.album,
-                album_id: r.album_id,
-                quality: r.quality,
-                on_disk: fileExists(r.file_path),
-                file_path: r.file_path
-            })),
-            total: rows.length
-        };
-    });
+    }, ({ query, source, limit: lim, offset: off }) => searchLocalLibrary(query, { source, limit: lim, offset: off }));
 
     tool('list_duplicates', 'read', {
         title: 'Duplicates',
@@ -941,7 +910,7 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         inputSchema: z.object({ file_path: z.string().min(1).max(4096), track_id: numericId.optional(), quality }),
         annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true }
     }, ({ file_path, track_id, quality: q }) => {
-        const item = queueLibraryUpgrade({ filePath: file_path, trackId: track_id, quality: q });
+        const item = queueUpgrade({ filePath: file_path, trackId: track_id, quality: q });
         return { queued: true, queue_id: item.id, track_id: item.contentId, quality: item.quality };
     });
 
@@ -1004,20 +973,16 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
     tool('resolve_duplicate', 'destructive', {
         title: 'Resolve duplicate',
         description:
-            'Delete the worse file of a duplicate pair (keeps higher quality, then larger size). Deletes a file from disk.',
-        inputSchema: z.object({ duplicate_id: z.number().int().positive(), confirm }),
+            'Delete one file of a duplicate pair (see list_duplicates). keep=auto keeps the higher quality, then the larger ' +
+            'file; first/second keep file_1/file_2. dry_run=true only reports what would be deleted. Deletes a file from disk.',
+        inputSchema: z.object({
+            duplicate_id: z.number().int().positive(),
+            keep: z.enum(['auto', 'first', 'second']).default('auto').describe('Which file to keep'),
+            dry_run: z.boolean().default(false).describe('Only report what would be deleted'),
+            confirm
+        }),
         annotations: { ...DESTRUCTIVE, openWorldHint: false }
-    }, async ({ duplicate_id }) => {
-        const row = databaseService.getDb()
-            .prepare('SELECT file_path_1, file_path_2 FROM duplicates WHERE id = ?')
-            .get(duplicate_id) as { file_path_1: string; file_path_2: string } | undefined;
-        if (!row) throw new NotFoundError('Duplicate not found');
-        // resolveDuplicate deletes without its own containment check.
-        if (!isPathWithinManagedRoots(row.file_path_1) || !isPathWithinManagedRoots(row.file_path_2)) {
-            throw new ForbiddenError('Duplicate files are outside the managed library folders');
-        }
-        return libraryScannerService.resolveDuplicate(duplicate_id);
-    });
+    }, ({ duplicate_id, keep, dry_run }) => resolveDuplicate(duplicate_id, { keep, dryRun: dry_run }));
 
     return server;
 }

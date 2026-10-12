@@ -1,14 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-    hasTrack: vi.fn((id: string) => id === 't-have'),
+    isTrackInLibrary: vi.fn((id: string) => id === 't-have'),
+    albumStatus: vi.fn((_id: string, _total?: number | null) => ({ status: 'missing' })),
     enqueue: vi.fn(),
     ensureReady: vi.fn(),
     getPurchaseIds: vi.fn(),
     listFavorites: vi.fn()
 }));
 
-vi.mock('./database/index.js', () => ({ databaseService: { hasTrack: mocks.hasTrack } }));
+vi.mock('./library-lookup.js', () => ({
+    isTrackInLibrary: mocks.isTrackInLibrary,
+    albumStatus: mocks.albumStatus
+}));
 vi.mock('./download-actions.js', () => ({
     downloadActionsService: { enqueue: mocks.enqueue, ensureReady: mocks.ensureReady }
 }));
@@ -21,6 +25,8 @@ import { downloadFavorites, downloadPurchases, queueLibraryIds } from './favorit
 describe('favorites and purchases download', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        mocks.isTrackInLibrary.mockImplementation((id: string) => id === 't-have');
+        mocks.albumStatus.mockImplementation(() => ({ status: 'missing' }));
         mocks.enqueue.mockImplementation(async ({ id }: { id: string }) => {
             if (id === 'bad') throw new Error('nope');
             return { items: [], queued: id === 'dup' ? 0 : 1, deduped: id === 'dup' ? 1 : 0 };
@@ -63,5 +69,23 @@ describe('favorites and purchases download', () => {
         const result = await downloadFavorites('albums', undefined, 'mcp');
         expect(result.queued).toBe(2);
         expect(mocks.listFavorites).toHaveBeenNthCalledWith(2, 'albums', { limit: 100, offset: 100 });
+    });
+
+    it('skips favorite tracks on disk and complete albums, queues the rest', async () => {
+        mocks.listFavorites.mockImplementation(async (kind: string) =>
+            kind === 'tracks'
+                ? { items: [{ id: 't-have' }, { id: 't2' }], has_more: false }
+                : { items: [{ id: 'full', tracks_count: 2 }, { id: 'half', tracks_count: 4 }], has_more: false }
+        );
+        mocks.albumStatus.mockImplementation((id: string) => ({ status: id === 'full' ? 'complete' : 'partial' }));
+
+        const result = await downloadFavorites('all', 27, 'test');
+
+        expect(result).toEqual({ queued: 2, deduped: 0, skipped: 2, failed: 0 });
+        expect(mocks.albumStatus).toHaveBeenCalledWith('full', 2);
+        expect(mocks.enqueue.mock.calls.map(([arg]) => [arg.type, arg.id])).toEqual([
+            ['album', 'half'],
+            ['track', 't2']
+        ]);
     });
 });

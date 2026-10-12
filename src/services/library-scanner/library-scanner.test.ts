@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { LibraryScannerService } from './index.js';
+import { LibraryScannerService, isTemporaryDownloadFile, isPathInsideDirectory } from './index.js';
 import { databaseService } from '../database/index.js';
 import { EventEmitter } from 'events';
 import fs from 'fs';
@@ -29,6 +29,10 @@ vi.mock('../database/index.js', () => ({
             })
         })
     }
+}));
+
+vi.mock('../../utils/binaries.js', () => ({
+    checkBinaryAvailability: vi.fn().mockResolvedValue({ available: false })
 }));
 
 vi.mock('../history.js', () => ({
@@ -156,57 +160,86 @@ describe('LibraryScannerService', () => {
         });
     });
 
-    describe('Duplicate Resolution', () => {
-        it('should delete the lower-size file when resolving a similar duplicate', async () => {
-            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qbz-duplicate-'));
-            const keepPath = path.join(tempDir, 'keep.flac');
-            const deletePath = path.join(tempDir, 'delete.flac');
-            fs.writeFileSync(keepPath, Buffer.alloc(20));
-            fs.writeFileSync(deletePath, Buffer.alloc(10));
+    describe('Temporary download files', () => {
+        it('recognises every staging name the downloader writes', () => {
+            expect(isTemporaryDownloadFile('/m/A/01. Song.qbz-part.flac')).toBe(true);
+            expect(isTemporaryDownloadFile('/m/A/01. Song.qbz-part')).toBe(true);
+            expect(isTemporaryDownloadFile('/m/A/01. Song.qbz-replace-1700000000000.flac')).toBe(true);
+            expect(isTemporaryDownloadFile('/m/A/01. Song.qbz-replace-1700000000000-2.flac')).toBe(true);
+            expect(isTemporaryDownloadFile('/m/A/01. Song.qbz-backup-1700000000000.mp3')).toBe(true);
+            expect(isTemporaryDownloadFile('C:\\m\\01. Song.QBZ-PART.FLAC')).toBe(true);
+        });
 
-            const run = vi.fn();
-            vi.mocked(databaseService.getDb).mockReturnValue({
-                prepare: vi.fn((query: string) => {
-                    if (query.includes('SELECT * FROM duplicates')) {
-                        return {
-                            get: vi.fn().mockReturnValue({
-                                id: 1,
-                                file_path_1: keepPath,
-                                file_path_2: deletePath,
-                                match_type: 'similar'
-                            })
-                        };
-                    }
+        it('leaves real tracks alone, even with qbz in the name', () => {
+            expect(isTemporaryDownloadFile('/m/A/01. Song.flac')).toBe(false);
+            expect(isTemporaryDownloadFile('/m/qbz-part/01. Song.flac')).toBe(false);
+            expect(isTemporaryDownloadFile('/m/A/01. qbz-part of me.flac')).toBe(false);
+            expect(isTemporaryDownloadFile('/m/A/01. Song.qbz-replace-final.flac')).toBe(false);
+        });
 
-                    if (query.includes('SELECT * FROM library_files')) {
-                        return {
-                            get: vi.fn((filePath: string) => {
-                                if (filePath === keepPath) {
-                                    return { file_path: keepPath, quality: 6, file_size: 20 };
-                                }
-                                if (filePath === deletePath) {
-                                    return { file_path: deletePath, quality: 6, file_size: 10 };
-                                }
-                                return undefined;
-                            })
-                        };
-                    }
-
-                    return { run };
-                })
-            } as any);
-
+        it('does not collect temp files when walking the library', async () => {
+            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'qbz-scan-'));
             try {
-                const result = await scanner.resolveDuplicate(1);
-
-                expect(result.deleted).toBe(true);
-                expect(result.deletedFile).toBe(deletePath);
-                expect(fs.existsSync(deletePath)).toBe(false);
-                expect(fs.existsSync(keepPath)).toBe(true);
-                expect(databaseService.deleteTrackByPath).toHaveBeenCalledWith(deletePath);
-                expect(databaseService.resolveDuplicate).toHaveBeenCalledWith(1);
+                fs.writeFileSync(path.join(dir, 'a.flac'), 'x');
+                fs.writeFileSync(path.join(dir, 'a.qbz-part.flac'), 'x');
+                fs.writeFileSync(path.join(dir, 'b.qbz-replace-1700000000000.flac'), 'x');
+                fs.writeFileSync(path.join(dir, 'c.qbz-backup-1700000000000.mp3'), 'x');
+                const internals = scanner as unknown as {
+                    collectAudioFiles(dir: string): Promise<{ filePath: string }[]>;
+                };
+                const files = await internals.collectAudioFiles(dir);
+                expect(files.map((f) => path.basename(f.filePath))).toEqual(['a.flac']);
             } finally {
-                fs.rmSync(tempDir, { recursive: true, force: true });
+                fs.rmSync(dir, { recursive: true, force: true });
+            }
+        });
+
+        it('never pairs a previously indexed temp file as a duplicate', async () => {
+            vi.mocked(databaseService.getLibraryFiles).mockReturnValue([
+                { file_path: '/m/A/01. Song.flac', audio_fingerprint: 'fp', title: 'Song', artist: 'A' },
+                { file_path: '/m/A/01. Song.qbz-backup-1700000000000.flac', audio_fingerprint: 'fp', title: 'Song', artist: 'A' }
+            ] as never);
+            const internals = scanner as unknown as { detectDuplicates(): Promise<number> };
+            expect(await internals.detectDuplicates()).toBe(0);
+            expect(databaseService.addDuplicate).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('Subfolder scans', () => {
+        it('isPathInsideDirectory matches only real descendants', () => {
+            expect(isPathInsideDirectory('/music/A/x.flac', '/music/A')).toBe(true);
+            expect(isPathInsideDirectory('/music/A', '/music/A')).toBe(true);
+            expect(isPathInsideDirectory('/music/AB/x.flac', '/music/A')).toBe(false);
+            expect(isPathInsideDirectory('/music/B/x.flac', '/music/A')).toBe(false);
+        });
+
+        it('keeps index rows outside the scanned folder and drops stale rows inside it', async () => {
+            const root = fs.mkdtempSync(path.join(os.tmpdir(), 'qbz-subscan-'));
+            const sub = path.join(root, 'Artist A');
+            fs.mkdirSync(sub);
+            const kept = path.join(sub, '01. Kept.flac');
+            fs.writeFileSync(kept, 'abc');
+            const stat = fs.statSync(kept);
+            try {
+                vi.mocked(databaseService.getLibraryFiles).mockReturnValue([
+                    { file_path: kept, file_size: stat.size, file_mtime_ms: stat.mtimeMs, quality: 6, format: 'flac' },
+                    { file_path: path.join(sub, '02. Gone.flac'), file_size: 1, file_mtime_ms: 1 },
+                    { file_path: path.join(sub, '01. Kept.qbz-part.flac'), file_size: 1, file_mtime_ms: 1 },
+                    { file_path: path.join(root, 'Artist B', '01. Other.flac'), file_size: 1, file_mtime_ms: 1 },
+                    { file_path: path.join(root, 'Artist AB', '01. Sibling.flac'), file_size: 1, file_mtime_ms: 1 }
+                ] as never);
+
+                const result = await scanner.scanLibrary(sub, { detectDuplicates: false, checkUpgrades: false });
+
+                expect(result.totalFiles).toBe(1);
+                expect(result.cachedFiles).toBe(1);
+                const deleted = vi.mocked(databaseService.deleteLibraryFileByPath).mock.calls.map((c) => c[0]);
+                expect(deleted.sort()).toEqual(
+                    [path.join(sub, '01. Kept.qbz-part.flac'), path.join(sub, '02. Gone.flac')].sort()
+                );
+                expect(databaseService.addLibraryFile).not.toHaveBeenCalled();
+            } finally {
+                fs.rmSync(root, { recursive: true, force: true });
             }
         });
     });

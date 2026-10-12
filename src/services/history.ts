@@ -1,5 +1,7 @@
 import fs from 'fs';
+import path from 'path';
 import { logger } from '../utils/logger.js';
+import { getDataDir } from '../utils/data-dir.js';
 import { databaseService } from './database/index.js';
 
 export interface HistoryEntry {
@@ -19,7 +21,6 @@ export interface HistoryEntry {
     };
 }
 
-const DEFAULT_HISTORY_PATH = './data/history.json';
 
 export const HISTORY_DEFAULT_LIMIT = 50;
 export const HISTORY_MAX_LIMIT = 500;
@@ -95,7 +96,7 @@ export class HistoryService {
     private jsonPath: string;
 
     constructor(historyPath?: string) {
-        this.jsonPath = historyPath || DEFAULT_HISTORY_PATH;
+        this.jsonPath = historyPath || path.join(getDataDir(), 'history.json');
         this.migrateFromJson();
     }
 
@@ -136,8 +137,7 @@ export class HistoryService {
     }
 
     getSorted(limit?: number): Array<{ id: string } & HistoryEntry> {
-        // getHistorySorted interpolates the limit into the SQL text, so only a
-        // positive integer may reach it.
+        // Anything but a positive integer means "all entries".
         const safeLimit =
             typeof limit === 'number' && Number.isInteger(limit) && limit > 0 ? limit : undefined;
         return databaseService.getHistorySorted(safeLimit) as unknown as Array<{ id: string } & HistoryEntry>;

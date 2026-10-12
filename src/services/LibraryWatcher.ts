@@ -5,6 +5,7 @@ import type { FSWatcher } from 'chokidar';
 import { CONFIG } from '../config.js';
 import { logger } from '../utils/logger.js';
 import { libraryScannerService } from './library-scanner/index.js';
+import { isTemporaryDownloadFile } from './library-scanner/temp-files.js';
 
 const DEBOUNCE_MS = 3000;
 
@@ -31,6 +32,9 @@ export class LibraryWatcher {
         this.watcher.on('all', (_event, filePath) => {
             const ext = path.extname(filePath).toLowerCase();
             if (!libraryScannerService.supportedFormats.includes(ext)) return;
+            // Staging/replacement files of a running download change constantly
+            // and are never indexed; the finished rename triggers the scan.
+            if (isTemporaryDownloadFile(filePath)) return;
 
             this.pendingPaths.add(filePath);
             this.scheduleScan();

@@ -3,9 +3,9 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { logger } from '../../utils/logger.js';
+import { getDataDir } from '../../utils/data-dir.js';
 
-const DB_VERSION = 12;
-const DEFAULT_DB_PATH = path.resolve(process.cwd(), 'data', 'qbz.db');
+const DB_VERSION = 13;
 
 /**
  * `%` and `_` are wildcards inside a LIKE pattern. A search for "100_" or a
@@ -37,6 +37,25 @@ export interface DbTrack {
     quality_scan_result?: string;
     quality_scanned_at?: string;
 }
+
+export interface PagedRows<T> {
+    items: T[];
+    total: number;
+    limit: number;
+    offset: number;
+}
+
+const MAX_PAGE_LIMIT = 500;
+
+/** Integer paging values for a bound LIMIT/OFFSET (SQLite reads a negative LIMIT as unlimited). */
+const normalizePage = (page: { limit?: number; offset?: number }): { limit: number; offset: number } => {
+    const limit = Number.isInteger(page.limit) && (page.limit as number) > 0 ? Math.min(page.limit as number, MAX_PAGE_LIMIT) : 25;
+    const offset = Number.isInteger(page.offset) && (page.offset as number) > 0 ? (page.offset as number) : 0;
+    return { limit, offset };
+};
+
+const TRACK_TAG_COLUMNS = ['title', 'artist', 'album_artist', 'album', 'genre', 'year', 'isrc', 'label'] as const;
+type TrackTagColumn = (typeof TRACK_TAG_COLUMNS)[number];
 
 export interface DbAlbum {
     id: string;
@@ -82,8 +101,9 @@ export class DatabaseService {
     private dbPath: string;
     private initialized = false;
 
+    /** Without a path the database lives in the app data directory (see utils/data-dir.ts), resolved on first use. */
     constructor(dbPath?: string) {
-        this.dbPath = dbPath || DEFAULT_DB_PATH;
+        this.dbPath = dbPath || '';
     }
 
     private createMigrationBackup(targetVersion: number): void {
@@ -117,6 +137,7 @@ export class DatabaseService {
         if (this.initialized) return;
 
         try {
+            if (!this.dbPath) this.dbPath = path.join(getDataDir(), 'qbz.db');
             const isMemory = this.dbPath === ':memory:';
             const absolutePath = isMemory ? ':memory:' : path.resolve(this.dbPath);
             
@@ -605,6 +626,26 @@ export class DatabaseService {
                 }
             }
 
+            if (currentVersion < 13) {
+                // Lookups by ISRC, album, file path and queue status used to
+                // scan the whole table (the catalog's "already downloaded"
+                // flags run one per result row). Index creation only adds
+                // structures, so no backup is taken for it.
+                try {
+                    this.db!.exec(`
+                        CREATE INDEX IF NOT EXISTS idx_tracks_isrc ON tracks(isrc);
+                        CREATE INDEX IF NOT EXISTS idx_tracks_album_id ON tracks(album_id);
+                        CREATE INDEX IF NOT EXISTS idx_tracks_file_path ON tracks(file_path);
+                        CREATE INDEX IF NOT EXISTS idx_library_track_id ON library_files(track_id);
+                        CREATE INDEX IF NOT EXISTS idx_queue_items_status ON queue_items(status);
+                    `);
+                    logger.info('Migration v13: Added lookup indexes', 'DB');
+                } catch (error: unknown) {
+                    logger.warn(`Migration v13 partial: ${(error as Error).message}`, 'DB');
+                    migrationsOk = false;
+                }
+            }
+
             if (!migrationsOk) {
                 logger.error(
                     `Migration to v${DB_VERSION} incomplete; version not recorded, will retry on next start`,
@@ -723,6 +764,65 @@ export class DatabaseService {
                 "SELECT * FROM tracks WHERE title LIKE ? ESCAPE '\\' OR artist LIKE ? ESCAPE '\\' OR album LIKE ? ESCAPE '\\' ORDER BY downloaded_at DESC LIMIT 100"
             )
             .all(searchQuery, searchQuery, searchQuery) as DbTrack[];
+    }
+
+    /** Downloaded tracks matching title/artist/album, newest first, with the total for paging. */
+    searchTracksPaged(query: string, page: { limit?: number; offset?: number } = {}): PagedRows<DbTrack> {
+        const db = this.getDb();
+        const { limit, offset } = normalizePage(page);
+        const pattern = `%${escapeLikePattern(query)}%`;
+        const where =
+            "title LIKE ? ESCAPE '\\' OR artist LIKE ? ESCAPE '\\' OR album_artist LIKE ? ESCAPE '\\' OR album LIKE ? ESCAPE '\\'";
+        const params = [pattern, pattern, pattern, pattern];
+        const total = (db.prepare(`SELECT COUNT(*) AS count FROM tracks WHERE ${where}`).get(...params) as {
+            count: number;
+        }).count;
+        const items = db
+            .prepare(`SELECT * FROM tracks WHERE ${where} ORDER BY downloaded_at DESC LIMIT ? OFFSET ?`)
+            .all(...params, limit, offset) as DbTrack[];
+        return { items, total, limit, offset };
+    }
+
+    getTracksByAlbumId(albumId: string): DbTrack[] {
+        const db = this.getDb();
+        return db.prepare('SELECT * FROM tracks WHERE album_id = ?').all(albumId) as DbTrack[];
+    }
+
+    getTracksByIds(ids: string[]): DbTrack[] {
+        if (ids.length === 0) return [];
+        const db = this.getDb();
+        const rows: DbTrack[] = [];
+        // SQLite caps bound parameters per statement (999 on older builds).
+        for (let i = 0; i < ids.length; i += 500) {
+            const chunk = ids.slice(i, i + 500);
+            rows.push(
+                ...(db
+                    .prepare(`SELECT * FROM tracks WHERE id IN (${chunk.map(() => '?').join(',')})`)
+                    .all(...chunk) as DbTrack[])
+            );
+        }
+        return rows;
+    }
+
+    getTrackByPath(filePath: string): DbTrack | undefined {
+        const db = this.getDb();
+        return db.prepare('SELECT * FROM tracks WHERE file_path = ?').get(filePath) as DbTrack | undefined;
+    }
+
+    /**
+     * Updates the tag columns of the `tracks` row for a file after its tags
+     * were edited on disk. Only the given columns change.
+     */
+    updateTrackTagsByPath(filePath: string, fields: Partial<Pick<DbTrack, TrackTagColumn>>): number {
+        const entries = Object.entries(fields).filter(
+            ([key, value]) => (TRACK_TAG_COLUMNS as readonly string[]).includes(key) && value !== undefined
+        );
+        if (entries.length === 0) return 0;
+        const db = this.getDb();
+        const assignments = entries.map(([key]) => `${key} = ?`).join(', ');
+        return db
+            .prepare(`UPDATE tracks SET ${assignments} WHERE file_path = ?`)
+            .run(...entries.map(([, value]) => value), filePath).changes;
     }
 
     getTrackCount(): number {
@@ -1013,6 +1113,48 @@ export class DatabaseService {
         return db
             .prepare('SELECT * FROM library_files WHERE file_path = ?')
             .get(filePath) as Record<string, unknown> | undefined;
+    }
+
+    getLibraryFileById(id: number): Record<string, unknown> | undefined {
+        const db = this.getDb();
+        return db.prepare('SELECT * FROM library_files WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    }
+
+    /** Scanned files matching title/artist/album/path, with the total for paging. */
+    searchLibraryFiles(
+        query: string,
+        page: { limit?: number; offset?: number } = {}
+    ): PagedRows<Record<string, unknown>> {
+        const db = this.getDb();
+        const { limit, offset } = normalizePage(page);
+        const pattern = `%${escapeLikePattern(query)}%`;
+        const where =
+            "title LIKE ? ESCAPE '\\' OR artist LIKE ? ESCAPE '\\' OR album_artist LIKE ? ESCAPE '\\' OR album LIKE ? ESCAPE '\\' OR file_path LIKE ? ESCAPE '\\'";
+        const params = [pattern, pattern, pattern, pattern, pattern];
+        const total = (db.prepare(`SELECT COUNT(*) AS count FROM library_files WHERE ${where}`).get(...params) as {
+            count: number;
+        }).count;
+        const items = db
+            .prepare(
+                `SELECT * FROM library_files WHERE ${where} ORDER BY COALESCE(album_artist, artist), album, file_path LIMIT ? OFFSET ?`
+            )
+            .all(...params, limit, offset) as Record<string, unknown>[];
+        return { items, total, limit, offset };
+    }
+
+    /** Updates tag and file-stat columns of a scanned file after an edit on disk. */
+    updateLibraryFileTags(
+        filePath: string,
+        fields: { title?: string; artist?: string; album_artist?: string; album?: string; file_size?: number; file_mtime_ms?: number }
+    ): number {
+        const allowed = ['title', 'artist', 'album_artist', 'album', 'file_size', 'file_mtime_ms'];
+        const entries = Object.entries(fields).filter(([key, value]) => allowed.includes(key) && value !== undefined);
+        if (entries.length === 0) return 0;
+        const db = this.getDb();
+        const assignments = entries.map(([key]) => `${key} = ?`).join(', ');
+        return db
+            .prepare(`UPDATE library_files SET ${assignments} WHERE file_path = ?`)
+            .run(...entries.map(([, value]) => value), filePath).changes;
     }
 
     deleteLibraryFileByPath(filePath: string): void {
@@ -1531,26 +1673,6 @@ export class DatabaseService {
         );
     }
 
-    updateTrackPath(id: string, newPath: string): void {
-        const db = this.getDb();
-        db.transaction(() => {
-            db.prepare('UPDATE tracks SET file_path = ? WHERE id = ?').run(newPath, id);
-            db.prepare('UPDATE library_files SET file_path = ? WHERE track_id = ?').run(newPath, id);
-        })();
-    }
-
-    updateTrackMetadata(id: string, metadata: { genre?: string }): void {
-        const db = this.getDb();
-        if (metadata.genre) {
-            db.transaction(() => {
-                db.prepare('UPDATE tracks SET genre = ? WHERE id = ?').run(metadata.genre, id);
-                db.prepare('UPDATE library_files SET genre = ? WHERE track_id = ?').run(
-                    metadata.genre,
-                    id
-                );
-            })();
-        }
-    }
     addHistoryEntry(id: string, entry: {
         downloadedAt?: string;
         filename?: string;
@@ -1622,8 +1744,12 @@ export class DatabaseService {
 
     getHistorySorted(limit?: number): Record<string, unknown>[] {
         const db = this.getDb();
-        const query = 'SELECT * FROM history ORDER BY downloaded_at DESC' + (limit ? ` LIMIT ${limit}` : '');
-        const rows = db.prepare(query).all() as {
+        // Bound, never interpolated: a non-integer limit used to reach the SQL
+        // text. SQLite reads a negative LIMIT as "no limit".
+        const safeLimit = Number.isInteger(limit) && (limit as number) > 0 ? (limit as number) : -1;
+        const rows = db
+            .prepare('SELECT * FROM history ORDER BY downloaded_at DESC LIMIT ?')
+            .all(safeLimit) as {
             downloaded_at?: string;
             artist_image_url?: string;
             quality_scan?: string;

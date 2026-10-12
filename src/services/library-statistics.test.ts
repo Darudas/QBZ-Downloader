@@ -63,6 +63,26 @@ describe('LibraryStatisticsService', () => {
         expect(stats.activity.length).toBe(30);
     });
 
+    it('counts ISO timestamps written by addTrack', async () => {
+        const today = new Date().toISOString();
+        const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        vi.mocked(databaseService.getAllTracks).mockReturnValue([
+            { id: '1', downloaded_at: today },
+            { id: '2', downloaded_at: today },
+            { id: '3', downloaded_at: yesterday },
+            { id: '4', downloaded_at: '2001-01-01T00:00:00.000Z' },
+            { id: '5', downloaded_at: 'garbage' },
+            { id: '6' }
+        ] as unknown as ReturnType<typeof databaseService.getAllTracks>);
+
+        const stats = await service.getLibraryStats();
+
+        expect(stats.activity.find((a) => a.date === today.slice(0, 10))?.count).toBe(2);
+        expect(stats.activity.find((a) => a.date === yesterday.slice(0, 10))?.count).toBe(1);
+        expect(stats.activity.reduce((sum, a) => sum + a.count, 0)).toBe(3);
+        expect(stats.activity.at(-1)?.date).toBe(today.slice(0, 10));
+    });
+
     it('should return correct labels for qualities', () => {
         const target = service as unknown as { getQualityLabel: (q: number) => string };
         expect(target.getQualityLabel(27)).toBe('Hi-Res');

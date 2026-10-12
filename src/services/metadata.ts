@@ -1096,6 +1096,20 @@ export class MetadataService {
 
     private static taggingLock: Promise<void> = Promise.resolve();
 
+    /**
+     * Runs `operation` after every tagging operation queued before it. Tag
+     * writes rename files in place, so two of them must never overlap.
+     */
+    static runExclusive<T>(operation: () => Promise<T> | T): Promise<T> {
+        const run = async () => operation();
+        const current = MetadataService.taggingLock.then(run, run);
+        MetadataService.taggingLock = current.then(
+            () => undefined,
+            () => undefined
+        );
+        return current;
+    }
+
     async writeMetadata(
         filePath: string,
         metadata: Metadata,
@@ -1129,10 +1143,7 @@ export class MetadataService {
             }
         };
 
-        const currentOperation = MetadataService.taggingLock.then(operation, operation);
-        MetadataService.taggingLock = currentOperation.catch(() => {});
-
-        return currentOperation;
+        return MetadataService.runExclusive(operation);
     }
 }
 

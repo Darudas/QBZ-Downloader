@@ -123,6 +123,12 @@ const lyricsDownloadBody = z.object({
     trackId: z.union([z.string().regex(/^\d{1,20}$/), z.number().int().positive()])
 });
 
+const spotifyMigrationBody = z.object({
+    url: z.string().trim().min(1, 'url is required').max(2048),
+    quality: optionalQuality,
+    download: z.boolean().optional()
+});
+
 const albumZipBody = z.object({
     albumId: z.union([z.string().regex(/^[A-Za-z0-9]{1,40}$/), z.number().int().positive()])
 });
@@ -537,8 +543,9 @@ router.post('/lyrics/download-album-zip', async (req: Request, res: Response) =>
 /* ------------------------------------------------------------------ */
 
 router.post('/migrate/spotify', async (req: Request, res: Response) => {
+    // Outside the try: a malformed body is a 400, not a migration failure.
+    const { url, quality, download } = parseBody(spotifyMigrationBody, req.body);
     try {
-        const { url, quality, download } = req.body ?? {};
         const q = normalizeDownloadQuality(quality, CONFIG.quality.default);
         const results = await migrationService.migrateFromSpotify(url, q);
 

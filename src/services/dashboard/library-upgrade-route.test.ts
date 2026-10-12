@@ -13,6 +13,7 @@ vi.mock('../database/index.js', () => ({
 }));
 vi.mock('../queue/queue.js', () => ({ downloadQueue: { add: mocks.add } }));
 vi.mock('../../utils/paths.js', () => ({ isPathWithinManagedRoots: mocks.isPathWithinManagedRoots }));
+vi.mock('../library-lookup.js', () => ({ MAX_LOOKUP_TRACK_IDS: 500, MAX_LOOKUP_ALBUM_IDS: 50 }));
 vi.mock('../library-scanner/index.js', () => ({ libraryScannerService: {} }));
 vi.mock('../LibraryStatisticsService.js', () => ({ libraryStatisticsService: {} }));
 vi.mock('../FormatConverterService.js', () => ({ formatConverterService: {} }));

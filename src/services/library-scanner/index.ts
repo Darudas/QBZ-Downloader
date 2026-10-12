@@ -132,16 +132,6 @@ export interface DuplicateGroup {
     recommendation: string;
 }
 
-export interface ResolveDuplicateResult {
-    id: number;
-    resolved: boolean;
-    deleted: boolean;
-    deletedFile?: string;
-    keptFile?: string;
-    matchType?: string;
-    reason?: string;
-}
-
 export interface ScanResult {
     totalFiles: number;
     scannedFiles: number;
@@ -165,6 +155,9 @@ export interface ScanProgress {
 }
 
 import { checkBinaryAvailability } from '../../utils/binaries.js';
+import { isPathInsideDirectory, isTemporaryDownloadFile } from './temp-files.js';
+
+export { isPathInsideDirectory, isTemporaryDownloadFile } from './temp-files.js';
 
 export class LibraryScannerService extends EventEmitter {
 
@@ -249,6 +242,10 @@ export class LibraryScannerService extends EventEmitter {
             databaseService.clearDuplicateScan();
 
             for (const cached of cachedRows) {
+                // A scan of a subfolder only knows about that subfolder. Rows
+                // elsewhere in the library are neither stale nor cached here.
+                if (!isPathInsideDirectory(cached.file_path, scanDir)) continue;
+
                 if (currentPaths.has(cached.file_path)) {
                     cacheByPath.set(cached.file_path, cached);
                 } else {
@@ -459,9 +456,9 @@ export class LibraryScannerService extends EventEmitter {
                 this.currentProgress = progress;
                 this.emit('scan:progress', progress);
 
-                const changedFilePaths = options.deep
-                    ? undefined
-                    : changedFilePathsForUpgrade;
+                // A deep scan re-checks every file it saw, but never files
+                // outside the scanned folder.
+                const changedFilePaths = options.deep ? currentPaths : changedFilePathsForUpgrade;
                 const upgradeCount = await this.checkQobuzUpgrades(changedFilePaths);
                 result.upgradeableFiles = upgradeCount;
                 logger.info(`Found ${upgradeCount} tracks with available upgrades`, 'SCANNER');
@@ -505,7 +502,7 @@ export class LibraryScannerService extends EventEmitter {
                         await scan(fullPath);
                     } else if (entry.isFile()) {
                         const ext = path.extname(entry.name).toLowerCase();
-                        if (this.supportedFormats.includes(ext)) {
+                        if (this.supportedFormats.includes(ext) && !isTemporaryDownloadFile(entry.name)) {
                             const stats = fs.statSync(fullPath);
                             files.push({
                                 filePath: fullPath,
@@ -933,6 +930,10 @@ export class LibraryScannerService extends EventEmitter {
         const titleGroups = new Map<string, { filePath: string; title: string; artist: string; album: string }[]>();
 
         for (const file of files) {
+            // Rows indexed before temp files were excluded must never be
+            // offered for deletion as a "duplicate" of the finished track.
+            if (isTemporaryDownloadFile(file.file_path)) continue;
+
             if (file.audio_fingerprint) {
                 const key = file.audio_fingerprint;
                 if (!fingerprintGroups.has(key)) fingerprintGroups.set(key, []);
@@ -951,13 +952,6 @@ export class LibraryScannerService extends EventEmitter {
                     artist: file.artist || '',
                     album: file.album || ''
                 });
-
-                if (normTitle.includes('stereo love')) {
-                    logger.debug(
-                        `[DUPLICATE_CHECK] Added to title group '${normTitle}': ${path.basename(file.file_path)} (Artist: ${file.artist})`,
-                        'SCANNER'
-                    );
-                }
             }
         }
 
@@ -1240,131 +1234,6 @@ export class LibraryScannerService extends EventEmitter {
             needsUpgrade: false,
             missingTags: f.missing_tags ? JSON.parse(f.missing_tags) : []
         }));
-    }
-
-    async resolveDuplicate(id: number): Promise<ResolveDuplicateResult> {
-        const db = databaseService.getDb();
-        const duplicate = db.prepare('SELECT * FROM duplicates WHERE id = ?').get(id) as {
-            file_path_1: string;
-            file_path_2: string;
-            match_type?: string;
-        } | undefined;
-        if (!duplicate) {
-            return {
-                id,
-                resolved: false,
-                deleted: false,
-                reason: 'Duplicate record not found'
-            };
-        }
-
-        const file1 = db
-            .prepare('SELECT * FROM library_files WHERE file_path = ?')
-            .get(duplicate.file_path_1) as { quality?: number; file_path: string; file_size?: number } | undefined;
-        const file2 = db
-            .prepare('SELECT * FROM library_files WHERE file_path = ?')
-            .get(duplicate.file_path_2) as { quality?: number; file_path: string; file_size?: number } | undefined;
-
-        const fallbackFile1 = {
-            file_path: duplicate.file_path_1,
-            file_size: fs.existsSync(duplicate.file_path_1) ? fs.statSync(duplicate.file_path_1).size : 0,
-            quality: 0
-        };
-        const fallbackFile2 = {
-            file_path: duplicate.file_path_2,
-            file_size: fs.existsSync(duplicate.file_path_2) ? fs.statSync(duplicate.file_path_2).size : 0,
-            quality: 0
-        };
-        const candidate1 = file1 || fallbackFile1;
-        const candidate2 = file2 || fallbackFile2;
-
-        const file1Exists = fs.existsSync(candidate1.file_path);
-        const file2Exists = fs.existsSync(candidate2.file_path);
-
-        if (!file1Exists && !file2Exists) {
-            db.prepare('DELETE FROM library_files WHERE file_path IN (?, ?)').run(
-                duplicate.file_path_1,
-                duplicate.file_path_2
-            );
-            databaseService.resolveDuplicate(id);
-            logger.warn(`Duplicate #${id} resolved as stale; neither file exists on disk`, 'SCANNER');
-            return {
-                id,
-                resolved: true,
-                deleted: false,
-                matchType: duplicate.match_type,
-                reason: 'Both duplicate files were already missing'
-            };
-        }
-
-        let fileToDelete: string;
-        let fileToKeep: string;
-        let didDelete = false;
-        if (!file1Exists) {
-            fileToDelete = candidate1.file_path;
-            fileToKeep = candidate2.file_path;
-        } else if (!file2Exists) {
-            fileToDelete = candidate2.file_path;
-            fileToKeep = candidate1.file_path;
-        } else if ((candidate1.quality || 0) > (candidate2.quality || 0)) {
-            fileToDelete = candidate2.file_path;
-            fileToKeep = candidate1.file_path;
-        } else if ((candidate2.quality || 0) > (candidate1.quality || 0)) {
-            fileToDelete = candidate1.file_path;
-            fileToKeep = candidate2.file_path;
-        } else {
-            if ((candidate1.file_size || 0) >= (candidate2.file_size || 0)) {
-                fileToDelete = candidate2.file_path;
-                fileToKeep = candidate1.file_path;
-            } else {
-                fileToDelete = candidate1.file_path;
-                fileToKeep = candidate2.file_path;
-            }
-        }
-
-        try {
-            if (fs.existsSync(fileToDelete)) {
-                fs.unlinkSync(fileToDelete);
-                didDelete = true;
-                databaseService.deleteTrackByPath(fileToDelete);
-                historyService.cleanup();
-                logger.info(
-                    `Resolved duplicate by deleting: ${path.basename(fileToDelete)} (kept ${path.basename(fileToKeep)})`,
-                    'SCANNER'
-                );
-            }
-        } catch (err: unknown) {
-            logger.error(
-                `Failed to delete duplicate file ${fileToDelete}: ${(err as Error).message}`,
-                'SCANNER'
-            );
-            throw err;
-        }
-
-        db.prepare('DELETE FROM library_files WHERE file_path = ?').run(fileToDelete);
-        db.prepare(
-            'UPDATE duplicates SET resolved = 1 WHERE file_path_1 = ? OR file_path_2 = ?'
-        ).run(fileToDelete, fileToDelete);
-        databaseService.resolveDuplicate(id);
-
-        return {
-            id,
-            resolved: true,
-            deleted: didDelete,
-            deletedFile: fileToDelete,
-            keptFile: fileToKeep,
-            matchType: duplicate.match_type
-        };
-    }
-
-    async deleteFile(filePath: string): Promise<boolean> {
-        try {
-            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-            return true;
-        } catch (error: unknown) {
-            logger.error(`Failed to delete file: ${(error as Error).message}`, 'SCANNER');
-            return false;
-        }
     }
 
     abortScan(): void {

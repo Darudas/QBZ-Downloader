@@ -5,6 +5,7 @@ import archiver from 'archiver';
 import { parse } from 'csv-parse/sync';
 import { logger } from '../utils/logger.js';
 import { CONFIG } from '../config.js';
+import { getDataDir } from '../utils/data-dir.js';
 import { downloadQueue } from './queue/queue.js';
 import { QueueItem } from './queue/types.js';
 import { isDownloadType } from './queue/utils.js';
@@ -26,7 +27,6 @@ interface ResumeData {
 }
 
 const RESUME_VERSION = 1;
-const DEFAULT_RESUME_PATH = './data/resume.json';
 const MAX_IMPORT_URLS = 1000;
 
 export class ResumeService {
@@ -34,7 +34,7 @@ export class ResumeService {
     private filePath: string;
 
     constructor(resumePath?: string) {
-        this.filePath = resumePath || DEFAULT_RESUME_PATH;
+        this.filePath = resumePath || path.join(getDataDir(), 'resume.json');
         this.load();
     }
 

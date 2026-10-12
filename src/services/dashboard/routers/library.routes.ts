@@ -1,14 +1,12 @@
 import { Router, Request, Response } from 'express';
+import { z } from 'zod';
 import { databaseService } from '../../database/index.js';
 import { libraryScannerService } from '../../library-scanner/index.js';
 import { libraryStatisticsService } from '../../LibraryStatisticsService.js';
-import { CONFIG } from '../../../config.js';
 import { formatConverterService } from '../../FormatConverterService.js';
 import { logger } from '../../../utils/logger.js';
 import { isPathWithinManagedRoots } from '../../../utils/paths.js';
-import { QueueRequestError } from '../../queue/utils.js';
-import { queueLibraryUpgrade } from '../../library-upgrade.js';
-import { isPublicHttpUrl, MAX_IMAGE_BYTES, MAX_IMAGE_REDIRECTS } from '../../../utils/net.js';
+import { deleteLibraryFile, editTrackMetadata, queueUpgrade, resolveDuplicate } from '../../library-actions.js';
 import {
     listSmartPlaylists,
     createSmartPlaylist,
@@ -19,6 +17,14 @@ import {
     countTracksForFilter,
     tracksForFilter
 } from '../../smart-playlists.js';
+import {
+    checkAlbums,
+    checkTracks,
+    MAX_LOOKUP_ALBUM_IDS,
+    MAX_LOOKUP_TRACK_IDS,
+    searchLocalLibrary
+} from '../../library-lookup.js';
+import { parseBody, parseParams, parseQuery, routeErrorHandler } from './route-utils.js';
 
 const router = Router();
 
@@ -36,6 +42,66 @@ const getPageParam = (raw: unknown, fallback: number, max: number): number => {
 
 const MAX_PAGE_SIZE = 1000;
 
+/** Query values may come as `?trackIds=1,2` or repeated `?trackIds=1&trackIds=2`. */
+const idList = (pattern: RegExp, max: number, what: string) =>
+    z
+        .union([z.string(), z.array(z.string())])
+        .optional()
+        .transform((value) =>
+            value === undefined
+                ? []
+                : (Array.isArray(value) ? value : [value])
+                      .flatMap((part) => part.split(','))
+                      .map((part) => part.trim())
+                      .filter(Boolean)
+        )
+        .pipe(z.array(z.string().regex(pattern, `Invalid ${what}`)).max(max, `At most ${max} ${what}s`));
+
+const lookupQuery = z
+    .object({
+        trackIds: idList(/^\d{1,20}$/, MAX_LOOKUP_TRACK_IDS, 'track id'),
+        albumIds: idList(/^[A-Za-z0-9]{1,40}$/, MAX_LOOKUP_ALBUM_IDS, 'album id')
+    })
+    .refine((value) => value.trackIds.length + value.albumIds.length > 0, {
+        message: 'trackIds or albumIds is required'
+    });
+
+const duplicateParams = z.object({ id: z.coerce.number().int().positive('Valid duplicate id is required') });
+
+const resolveDuplicateBody = z.object({
+    keep: z.enum(['auto', 'first', 'second']).default('auto'),
+    dryRun: z.boolean().default(false)
+});
+
+const filePathSchema = z.string().trim().min(1).max(4096);
+
+const metadataEditBody = z
+    .object({
+        filePath: filePathSchema,
+        // `metadata` is the name the old route used; `fields` is preferred.
+        fields: z.record(z.string(), z.unknown()).optional(),
+        metadata: z.record(z.string(), z.unknown()).optional()
+    })
+    .refine((body) => body.fields !== undefined || body.metadata !== undefined, {
+        message: 'fields is required'
+    });
+
+const deleteFileBody = z
+    .object({
+        filePath: filePathSchema.optional(),
+        libraryFileId: z.number().int().positive().optional()
+    })
+    .refine((body) => body.filePath !== undefined || body.libraryFileId !== undefined, {
+        message: 'filePath or libraryFileId is required'
+    });
+
+const searchQuery = z.object({
+    q: z.string().trim().min(1, 'Query parameter "q" is required').max(200),
+    source: z.enum(['tracks', 'files']).default('tracks'),
+    limit: z.coerce.number().int().min(1).max(100).default(25),
+    offset: z.coerce.number().int().min(0).max(1_000_000).default(0)
+});
+
 router.get('/scan/status', async (req: Request, res: Response) => {
     const stats = libraryScannerService.getScanStats();
     res.json({
@@ -46,24 +112,30 @@ router.get('/scan/status', async (req: Request, res: Response) => {
     });
 });
 
-/** Queues a Hi-Res upgrade; validation lives in queueLibraryUpgrade. */
+/** Queues a Hi-Res upgrade; validation lives in libraryActions.queueUpgrade. */
 router.post('/upgrade', (req: Request, res: Response) => {
     const trackId = String(req.body?.trackId ?? '').trim();
     if (!/^\d{1,20}$/.test(trackId)) {
         res.status(400).json({ error: 'filePath and a numeric trackId are required' });
         return;
     }
-    try {
-        const item = queueLibraryUpgrade({ filePath: req.body?.filePath, trackId, quality: req.body?.quality });
-        res.json({ success: true, item });
-    } catch (error: unknown) {
-        if (error instanceof QueueRequestError) {
-            res.status(error.statusCode).json({ error: error.message, code: error.code });
-            return;
-        }
-        logger.error(`Library upgrade failed: ${(error as Error).message}`, 'LIBRARY');
-        res.status(500).json({ error: 'Failed to queue upgrade' });
-    }
+    const item = queueUpgrade({ filePath: req.body?.filePath, trackId, quality: req.body?.quality });
+    res.json({ success: true, item });
+});
+
+/**
+ * Searches the local library. `source=tracks` (default): downloads made by
+ * this app, with Qobuz ids. `source=files`: everything the scanner indexed.
+ */
+router.get('/search', (req: Request, res: Response) => {
+    const { q, source, limit, offset } = parseQuery(searchQuery, req.query);
+    res.json(searchLocalLibrary(q, { source, limit, offset }));
+});
+
+/** "Already in the library?" for Qobuz track and album ids (file on disk, albums complete/partial/missing). */
+router.get('/lookup', async (req: Request, res: Response) => {
+    const { trackIds, albumIds } = parseQuery(lookupQuery, req.query);
+    res.json({ tracks: checkTracks(trackIds), albums: await checkAlbums(albumIds) });
 });
 
 router.post('/scan', (req: Request, res: Response) => {
@@ -138,24 +210,15 @@ router.get('/duplicates', (req: Request, res: Response) => {
     }
 });
 
+/**
+ * Deletes one file of a duplicate pair. Body (optional): `keep`
+ * auto|first|second, `dryRun` to only report the choice.
+ */
 router.post('/duplicates/:id/resolve', async (req: Request, res: Response) => {
-    try {
-        const id = Number(req.params.id);
-        if (!Number.isInteger(id) || id <= 0) {
-            res.status(400).json({ error: 'Valid duplicate id is required' });
-            return;
-        }
-
-        const result = await libraryScannerService.resolveDuplicate(id);
-        if (!result.resolved) {
-            res.status(404).json({ success: false, error: result.reason || 'Duplicate not found' });
-            return;
-        }
-
-        res.json({ success: true, ...result });
-    } catch (error: unknown) {
-        res.status(500).json({ error: (error as Error).message });
-    }
+    const { id } = parseParams(duplicateParams, req.params);
+    const options = parseBody(resolveDuplicateBody, req.body);
+    const result = await resolveDuplicate(id, options);
+    res.json({ success: true, ...result });
 });
 
 router.get('/integrity', (req: Request, res: Response) => {
@@ -167,135 +230,21 @@ router.get('/integrity', (req: Request, res: Response) => {
     }
 });
 
+/**
+ * Changes single tags of a FLAC/MP3 library file, keeping all other tags and
+ * the embedded cover. Body: `{ filePath, fields: { title?, artist?, ... } }`.
+ */
 router.post('/metadata/edit', async (req: Request, res: Response) => {
-    try {
-        const { filePath, metadata } = req.body;
-        if (!filePath || !metadata) {
-            res.status(400).json({ error: 'filePath and metadata are required' });
-            return;
-        }
-
-        if (!isPathWithinManagedRoots(filePath)) {
-            logger.warn(`Refused metadata write outside the library: ${filePath}`, 'LIBRARY');
-            res.status(403).json({ error: 'Path is outside the library directory' });
-            return;
-        }
-
-        const { default: MetadataService } = await import('../../metadata.js');
-        const metadataService = new MetadataService();
-
-        const targetMeta = {
-            title: metadata.title,
-            artist: metadata.artist,
-            album: metadata.album,
-            trackNumber: metadata.trackNumber || 0,
-            totalTracks: metadata.totalTracks || 0,
-            discNumber: metadata.discNumber || 1,
-            totalDiscs: metadata.totalDiscs || 1,
-            year: metadata.year || '',
-            genre: metadata.genre || '',
-            albumArtist: metadata.albumArtist || metadata.artist,
-            label: metadata.label || '',
-            copyright: metadata.copyright || '',
-            releaseDate: metadata.releaseDate || '',
-            originalReleaseDate: metadata.originalReleaseDate || '',
-
-            composer: metadata.composer || '',
-            conductor: metadata.conductor || '',
-            producer: metadata.producer || '',
-            mixer: metadata.mixer || '',
-            remixer: metadata.remixer || '',
-            lyricist: metadata.lyricist || '',
-            writer: metadata.writer || '',
-            arranger: metadata.arranger || '',
-            engineer: metadata.engineer || '',
-
-            isrc: metadata.isrc || '',
-            upc: metadata.upc || '',
-            barcode: metadata.barcode || metadata.upc || '',
-            catalogNumber: metadata.catalogNumber || '',
-            releaseType: metadata.releaseType || 'album',
-            version: metadata.version || '',
-            comment:
-                metadata.comment ||
-                'downloader by qbz-dl https://github.com/ifauzeee/QBZ-Downloader'
-        };
-
-        let coverBuffer: Buffer | null = null;
-        const imageUrl = metadata.image || metadata.coverUrl;
-        const coverCandidates = metadataService.getCoverUrlCandidates(
-            metadata.album?.image || metadata.image || {},
-            CONFIG.metadata.coverSize,
-            typeof imageUrl === 'string' ? imageUrl : metadata.coverUrl
-        );
-        if (coverCandidates.length > 0) {
-            const axios = (await import('axios')).default;
-            const { logger } = await import('../../../utils/logger.js');
-            for (const candidate of coverCandidates) {
-                // The URL comes from the request body, so it must not be used
-                // to reach the host's own network.
-                if (!isPublicHttpUrl(candidate)) {
-                    logger.warn(`Refused cover fetch for non-public URL: ${candidate}`, 'METADATA');
-                    continue;
-                }
-
-                try {
-                    const response = await axios.get(candidate, {
-                        responseType: 'arraybuffer',
-                        timeout: 15000,
-                        maxContentLength: MAX_IMAGE_BYTES,
-                        maxRedirects: MAX_IMAGE_REDIRECTS,
-                        beforeRedirect: (options) => {
-                            if (!isPublicHttpUrl(options.href)) {
-                                throw new Error('redirect to a non-public host');
-                            }
-                        }
-                    });
-                    coverBuffer = Buffer.from(response.data);
-                    break;
-                } catch (e: unknown) {
-                    logger.debug(`Cover candidate failed (${candidate}): ${(e as Error).message}`, 'METADATA');
-                }
-            }
-
-            if (!coverBuffer) {
-                logger.warn('Failed to download cover art from all candidates', 'METADATA');
-            }
-        }
-
-        const lyrics = metadata.lyrics || null;
-
-        await metadataService.writeMetadata(filePath, targetMeta as any, 0, lyrics, coverBuffer);
-        res.json({ success: true });
-    } catch (error: unknown) {
-        logger.error(
-            `Failed to write metadata to ${req.body?.filePath}: ${(error as Error).message}`,
-            'LIBRARY'
-        );
-        res.status(500).json({ error: (error as Error).message });
-    }
+    const body = parseBody(metadataEditBody, req.body);
+    const result = await editTrackMetadata(body.filePath, body.fields ?? body.metadata);
+    res.json({ success: true, ...result });
 });
 
-router.delete('/file', async (req: Request, res: Response) => {
-    try {
-        const { filePath } = req.body;
-
-        if (!filePath) {
-            res.status(400).json({ error: 'filePath is required' });
-            return;
-        }
-
-        if (!isPathWithinManagedRoots(filePath)) {
-            logger.warn(`Refused delete outside the library: ${filePath}`, 'LIBRARY');
-            res.status(403).json({ error: 'Path is outside the library directory' });
-            return;
-        }
-
-        const success = await libraryScannerService.deleteFile(filePath);
-        res.json({ success });
-    } catch (error: unknown) {
-        res.status(500).json({ error: (error as Error).message });
-    }
+/** Deletes an indexed library file from disk and from the index. Body: `{ filePath }` or `{ libraryFileId }`. */
+router.delete('/file', (req: Request, res: Response) => {
+    const body = parseBody(deleteFileBody, req.body);
+    const result = deleteLibraryFile(body);
+    res.json({ success: true, ...result });
 });
 
 router.get('/database/stats', async (req: Request, res: Response) => {
@@ -378,5 +327,7 @@ router.get('/smart-playlists/:id/tracks', (req: Request, res: Response) => {
     }
     res.json(tracksForFilter(filter));
 });
+
+router.use(routeErrorHandler('library'));
 
 export default router;

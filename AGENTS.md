@@ -17,7 +17,7 @@ After bumping `package.json` version, run:
 npm run sync-version
 ```
 
-This also updates the README badge and CHANGELOG top entry. **Do not bump versions manually.**
+This also updates the README badge and turns the CHANGELOG `## [Unreleased]` section into the new version's entry (a no-op once that version has a heading). **Do not bump versions manually.**
 
 ## Build order
 
@@ -51,7 +51,11 @@ Settings are stored in SQLite, read via `CONFIG` proxy object (`src/config.ts`).
 
 - `CONFIG` caches values and clears on `EVENTS.SETTINGS.UPDATED`
 - Qobuz credentials (appId, appSecret, token, userId) are in DB, not env vars
-- Desktop mode env vars (`DASHBOARD_PORT`, `DASHBOARD_HOST`) are used when `QBZ_DESKTOP=1`
+- Desktop mode env vars (`DASHBOARD_PORT`, `DASHBOARD_HOST`) are used when `QBZ_DESKTOP=1`, and are
+  never written into the DB in that mode
+- The DB (`qbz.db`), the credential key (`.secret.key`) and `resume.json` live in one data folder
+  (`src/utils/data-dir.ts`): `QBZ_DATA_DIR` if set, `<cwd>/data` in desktop mode, else
+  `<app root>/data`; an existing `<cwd>/data` is still used (with a warning) while the app folder has none
 
 ## Conventions
 
