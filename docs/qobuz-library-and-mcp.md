@@ -272,12 +272,14 @@ Conventions for every tool:
 
 ### Open: still to do
 
-**A2 leftovers.** These need checking; the agent was stopped while finishing its tests.
-- Re-read `download.routes.ts` and `catalog.routes.ts` end to end.
-- Add route tests for the new endpoints (retry/priority, `/download/urls`, watch PATCH/sync, history
-  delete).
-- The `already_downloaded` flags should use the planned `libraryLookupService` (track row plus file on
-  disk). Today they use the `tracks` table, and the `albums` table is never written.
+**A2 leftovers: done.**
+- Both routers re-read. Fixed: playlist and track details now carry `already_downloaded`, and
+  `POST /api/migrate/spotify` validates its body (a missing url was a 500).
+- Route tests in `src/services/dashboard/download-catalog-routes.test.ts` (retry/priority, retry-failed,
+  clear-pending, `/download/urls`, history delete/query, watch PATCH/sync/unwatch).
+- `already_downloaded` uses `libraryLookupService` (track row plus file on disk). The `albums` table is
+  indeed never written; album flags now mean "every track on disk" and come with `library_status`
+  (`complete`/`partial`/`missing`) and `downloaded_tracks`.
 
 **A3: settings, library, server hardening (not started)**
 
@@ -310,27 +312,44 @@ Conventions for every tool:
 - `FOLDER_TEMPLATE`/`FILE_TEMPLATE` containing `..` must not escape the download root.
 - `isPathWithinManagedRoots` must refuse filesystem-root roots (`/`, `C:\`).
 
-*Library scanner*
-- Exclude `*.qbz-part.*`, `*.qbz-backup-*` and `*.qbz-replace-*` files. Today they get indexed and can
-  be flagged as duplicates and deleted.
-- `resolveDuplicate(id, {keep, dryRun})` with a containment check.
-- Scanning a subfolder must not wipe the rest of the library index.
-- Remove the leftover `'stereo love'` debug code.
+*Library scanner: done*
+- The downloader's `*.qbz-part.*`, `*.qbz-replace-<ms>[-n].*` and `*.qbz-backup-<ms>.*` files are skipped
+  when walking the library, by duplicate detection and by the file watcher; old index rows for them are
+  dropped on the next scan (`library-scanner/temp-files.ts`).
+- `resolveDuplicate(id, {keep, dryRun})` with the containment check lives in `library-actions.ts` and is
+  used by REST and MCP.
+- A subfolder scan only reconciles rows below that folder.
+- The `'stereo love'` debug code is gone.
 
-*Database*
-- `DB_VERSION` 13 with indexes on `tracks(isrc, album_id, file_path)`, `library_files(track_id)` and
-  `queue_items(status)`.
-- Fix the `LIMIT` interpolation in `getHistorySorted`.
-- New `searchLibraryFiles`, `searchTracksPaged`, `getTracksByAlbumId`, `getLibraryFileById`.
-- Fix or remove the broken `updateTrackMetadata`/`updateTrackPath`.
+*Database: done*
+- `DB_VERSION` 13 adds indexes on `tracks(isrc)`, `tracks(album_id)`, `tracks(file_path)`,
+  `library_files(track_id)` and `queue_items(status)`.
+- `getHistorySorted` binds its `LIMIT`.
+- New `searchLibraryFiles`, `searchTracksPaged`, `getTracksByAlbumId`, `getTracksByIds`,
+  `getTrackByPath`, `getLibraryFileById`, `updateTrackTagsByPath`, `updateLibraryFileTags`.
+- `updateTrackMetadata`/`updateTrackPath` removed (no callers; one wrote a column that does not exist).
 
-*New services and routes*
-- `src/services/library-lookup.ts`: `checkTracks`, `checkAlbums` (complete/partial/missing),
-  `searchLocalLibrary`.
-- `src/services/library-actions.ts`: `queueUpgrade`, which builds the upgrade metadata server-side,
-  plus `editTrackMetadata`, `deleteLibraryFile` and `resolveDuplicate`.
-- Routes: `GET /api/library/search`, `GET /api/library/lookup`. (`POST /api/library/upgrade` is done;
-  move its logic into `libraryActionsService.queueUpgrade` so MCP can reuse it.)
+*New services and routes: done*
+- `src/services/library-lookup.ts`: `checkTracks`, `albumStatus`/`checkAlbums`
+  (complete/partial/missing), `isTrackInLibrary`, `searchLocalLibrary` (source `tracks` or `files`).
+  Used by the catalog flags, favorites download and the MCP `check_in_library`, `search_local_library`,
+  `get_album` and `get_track` tools.
+- `src/services/library-actions.ts`: `queueUpgrade` (was `library-upgrade.ts`; also by
+  `libraryFileId`), `editTrackMetadata`, `deleteLibraryFile`, `resolveDuplicate`. Tag edits go through
+  `src/services/tag-editor.ts`, which patches FLAC Vorbis comments in place and merges ID3 frames, so
+  other tags and the cover survive (unlike `writeMetadata`).
+- Routes (all zod-validated, JSON errors):
+  - `GET /api/library/search?q=&source=tracks|files&limit=1..100&offset=` →
+    `{items, total, offset, limit, has_more}`
+  - `GET /api/library/lookup?trackIds=1,2&albumIds=a,b` (max 500/50) →
+    `{tracks: {id: {in_library, quality?, file_path?}}, albums: {id: {status, downloaded, total}}}`
+  - `POST /api/library/duplicates/:id/resolve` body `{keep?: auto|first|second, dryRun?}`
+  - `POST /api/library/metadata/edit` body `{filePath, fields: {title?, artist?, album?, albumArtist?,
+    genre?, year?, trackNumber?, totalTracks?, discNumber?, totalDiscs?, composer?, label?, isrc?,
+    copyright?, comment?}}` (empty string removes a tag; FLAC and MP3 only)
+  - `DELETE /api/library/file` body `{filePath}` or `{libraryFileId}` (indexed files only)
+- MCP tools `edit_track_metadata` and `delete_library_file` are not registered yet; the services are
+  ready for them.
 
 **B1: REST and services for the library features**
 - Routers:
@@ -447,7 +466,10 @@ against a live account**, so test it with a real account before relying on it.
 - **Writes:** non-idempotent writes (`playlist/create`, `addTracks` with duplicates allowed, `update`) must
   not be retried after a timeout. Favorite and subscribe writes are idempotent.
 
-## Reference: existing bugs found by the audit (not yet fixed)
+## Reference: existing bugs found by the audit
+
+The lyrics, statistics, desktop-mode, `sync-version` and encryption items below are **fixed** (see the
+commit log); the client items are tracked separately.
 
 - **Client**
   - The command palette reads `data.suggestions`, but the route returns `{artists, albums, tracks}`, so
@@ -465,4 +487,7 @@ against a live account**, so test it with a real account before relying on it.
   into the database, so a later headless `npm start` binds 127.0.0.1:3210+.
 - **`sync-version`:** on the next version bump it renames the wrong CHANGELOG heading.
 - **Encryption:** the encryption key and the database path depend on the current working directory.
-  Starting from another directory silently yields ciphertext instead of the credentials.
+  Starting from another directory silently yields ciphertext instead of the credentials. Fixed by
+  `src/utils/data-dir.ts`: one folder for DB, key and resume file (`QBZ_DATA_DIR`, else `<cwd>/data` in
+  desktop mode, else `<app root>/data`, with an existing `<cwd>/data` still used and a warning while the
+  app folder has none).

@@ -6,6 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **Local library lookup and actions**: `GET /api/library/search` (app downloads or scanned files,
+  paged) and `GET /api/library/lookup` (tracks on disk; albums complete/partial/missing). Duplicate
+  resolution takes `keep`/`dryRun`; tag edits change single fields and keep all other tags and the
+  cover; deleting a library file also removes its index rows. REST and MCP share these services.
+- `QBZ_DATA_DIR` sets the folder for the database, the credential key and the resume file.
 - **AI control over MCP**: `/mcp` (Streamable HTTP) on the dashboard server plus a `qbz-mcp` stdio
   bridge. 49 tools let an assistant search Qobuz, manage favorites and playlists, download
   tracks/albums/playlists/artists/labels/favorites/URLs, and control the queue. MCP is off by default.
@@ -28,6 +33,21 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- **Lyrics from Qobuz were embedded empty**: the synced text was passed to the tagger as a boolean.
+- **Statistics activity chart was always zero**: ISO download timestamps were parsed as
+  `YYYY-MM-DD HH:MM:SS`.
+- **Desktop start changed the headless bind address**: Electron's port and host were saved into the
+  settings, so a later `npm start` listened on 127.0.0.1:3210+.
+- **Credentials came back encrypted** when the app was started from another directory: the database and
+  its key were looked up in `<cwd>/data`. They now share one stable folder; an existing `<cwd>/data`
+  keeps working.
+- **"Already downloaded" album badges were never shown** (they read a table nothing writes), and
+  "download all favorites" skipped tracks whose files had been deleted.
+- **Library scans** indexed in-flight download files (`*.qbz-part.*`, `*.qbz-replace-*`,
+  `*.qbz-backup-*`), which could show up as duplicates, and a subfolder scan dropped the rest of the
+  library from the index.
+- **Duplicate resolution over REST** had no library-folder check (the MCP tool did).
+- `sync-version` would have renamed the previous release heading instead of `[Unreleased]`.
 - **Arbitrary file deletion through the queue API**: `POST /api/queue/add` passed client metadata
   through, and a completed "upgrade" then deleted `metadata.oldFilePath`. Caller metadata is now
   dropped, and an upgrade only deletes a file that is inside the library roots, indexed in
