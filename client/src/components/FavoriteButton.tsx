@@ -42,15 +42,15 @@ export const FavoriteButton: React.FC<FavoriteButtonProps> = ({
         }
     };
 
-    const label = favorite ? t('action_unfavorite') : t('action_favorite');
+    // A toggle keeps one accessible name; its state is announced through aria-pressed.
     return (
         <button
             type="button"
             className={className}
             onClick={handleClick}
             disabled={busy}
-            title={label}
-            aria-label={label}
+            title={favorite ? t('action_unfavorite') : t('action_favorite')}
+            aria-label={t('action_favorite')}
             aria-pressed={favorite}
             style={{ ...(favorite ? { color: 'var(--danger)' } : {}), ...style }}
         >

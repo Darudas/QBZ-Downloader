@@ -76,8 +76,9 @@ describe('FavoritesView', () => {
         });
         render(<FavoritesView />);
         const row = (await screen.findByText('Second Album')).closest('.track-item') as HTMLElement;
-        await waitFor(() => expect(within(row).getByLabelText('action_unfavorite')).toBeInTheDocument());
-        fireEvent.click(within(row).getByLabelText('action_unfavorite'));
+        const heart = within(row).getByRole('button', { name: 'action_favorite' });
+        await waitFor(() => expect(heart).toHaveAttribute('aria-pressed', 'true'));
+        fireEvent.click(heart);
         await waitFor(() => expect(screen.queryByText('Second Album')).not.toBeInTheDocument());
         expect(calls.find((c) => c.method === 'DELETE')?.body).toEqual({ albumIds: ['a2'] });
     });

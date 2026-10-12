@@ -82,7 +82,7 @@ describe('Player', () => {
         });
         render(<Player />);
         fireEvent.click(screen.getByLabelText('action_favorite'));
-        await waitFor(() => expect(screen.getByLabelText('action_unfavorite')).toBeInTheDocument());
+        await waitFor(() => expect(screen.getByLabelText('action_favorite')).toHaveAttribute('aria-pressed', 'true'));
         expect(calls.find((c) => c.method === 'POST' && c.url === '/api/favorites')?.body).toEqual({ trackIds: ['1'] });
     });
 
