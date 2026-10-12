@@ -10,7 +10,7 @@ const CONFIG = {
 
 vi.mock('../config.js', () => ({ CONFIG }));
 
-const { isPathWithinManagedRoots, getManagedRoots } = await import('./paths.js');
+const { isPathWithinManagedRoots, getManagedRoots, isFilesystemRoot } = await import('./paths.js');
 
 describe('isPathWithinManagedRoots', () => {
     let root: string;
@@ -74,5 +74,25 @@ describe('isPathWithinManagedRoots', () => {
         CONFIG.export.outputDir = outside;
         expect(getManagedRoots()).toHaveLength(2);
         expect(isPathWithinManagedRoots(path.join(outside, 'converted.mp3'))).toBe(true);
+    });
+
+    it('never treats a filesystem root as a managed root', () => {
+        const fsRoot = path.parse(root).root;
+        CONFIG.download.outputDir = fsRoot;
+        expect(getManagedRoots()).toEqual([]);
+        expect(isPathWithinManagedRoots(path.join(fsRoot, 'etc', 'passwd'))).toBe(false);
+        expect(isPathWithinManagedRoots(fsRoot)).toBe(false);
+
+        // The export dir is still honoured on its own.
+        CONFIG.export.outputDir = outside;
+        expect(isPathWithinManagedRoots(path.join(outside, 'x.mp3'))).toBe(true);
+    });
+});
+
+describe('isFilesystemRoot', () => {
+    it('recognises the root of the current platform', () => {
+        expect(isFilesystemRoot('/')).toBe(true);
+        expect(isFilesystemRoot(path.parse(process.cwd()).root)).toBe(true);
+        expect(isFilesystemRoot(process.cwd())).toBe(false);
     });
 });

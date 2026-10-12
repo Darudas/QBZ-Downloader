@@ -1,6 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import path from 'path';
-import { sanitizeFilename, applyTemplate, buildFolderPath, ensurePathSafety } from './MetadataProcessor.js';
+import {
+    sanitizeFilename,
+    applyTemplate,
+    buildFolderPath,
+    buildFilename,
+    ensurePathSafety,
+    toContainedSegments
+} from './MetadataProcessor.js';
 import type { Metadata } from './metadata.js';
 
 vi.mock('../config.js', () => ({
@@ -154,6 +161,85 @@ describe('MetadataProcessor', () => {
             const totalLength = (base + result.folder + '\\' + result.file).length;
             expect(totalLength).toBeLessThanOrEqual(255);
             expect(result.file).toMatch(/\.flac$/);
+        });
+    });
+
+    describe('path containment', () => {
+        const withTemplates = async (folder: string, file: string, run: () => void) => {
+            const { CONFIG } = await import('../config.js');
+            const original = { ...CONFIG.download };
+            CONFIG.download.folderStructure = folder;
+            CONFIG.download.fileNaming = file;
+            try {
+                run();
+            } finally {
+                Object.assign(CONFIG.download, original);
+            }
+        };
+
+        const meta = {
+            artist: 'Artist',
+            albumArtist: 'Artist',
+            album: 'Album',
+            title: 'Title',
+            trackNumber: 1
+        } as unknown as Metadata;
+
+        it('drops "." and ".." segments, leading separators and drive letters', () => {
+            expect(toContainedSegments('../../etc/{x}')).toEqual(['etc', '{x}']);
+            expect(toContainedSegments('/abs/./path')).toEqual(['abs', 'path']);
+            expect(toContainedSegments('C:\\Windows\\..\\x')).toEqual(['Windows', 'x']);
+            expect(toContainedSegments('a/ .. /.../b')).toEqual(['a', 'b']);
+            expect(toContainedSegments('\\\\server\\share\\x')).toEqual(['server', 'share', 'x']);
+        });
+
+        it('keeps a hostile folder template below the download root', async () => {
+            await withTemplates('../../../../etc/{album}', '{title}', () => {
+                const folder = buildFolderPath(meta, 27);
+                expect(folder).toBe(path.join('etc', 'Album'));
+                const base = path.resolve('/srv/music');
+                expect(path.resolve(base, folder).startsWith(base + path.sep)).toBe(true);
+            });
+        });
+
+        it('keeps Qobuz metadata with traversal sequences inside its folder', async () => {
+            const hostile = {
+                ...meta,
+                albumArtist: '..',
+                album: '../../x',
+                title: '..\\..\\evil'
+            } as unknown as Metadata;
+            await withTemplates('{albumArtist}/{album}', '{title}', () => {
+                const folder = buildFolderPath(hostile, 27);
+                const file = buildFilename(hostile, 27);
+                expect(folder.split(path.sep)).not.toContain('..');
+                expect(file).not.toMatch(/[/\\]/);
+                const base = path.resolve('/srv/music');
+                const target = path.resolve(base, folder, file);
+                expect(target.startsWith(base + path.sep)).toBe(true);
+            });
+        });
+
+        it('flattens separators and dot-only names in the file template', async () => {
+            await withTemplates('{album}', '../{artist}/{title}', () => {
+                expect(buildFilename(meta, 27)).toBe('..-Artist-Title.flac');
+            });
+            await withTemplates('{album}', '..', () => {
+                expect(buildFilename(meta, 27)).toBe('Unknown.flac');
+            });
+        });
+
+        it('refuses a folder that would resolve outside the base', () => {
+            expect(() => ensurePathSafety('/srv/music', '../etc', 'passwd')).toThrow(
+                /outside the download folder/
+            );
+            expect(() => ensurePathSafety('/srv/music', '/etc', 'passwd')).toThrow(
+                /outside the download folder/
+            );
+            expect(ensurePathSafety('/srv/music', 'A/..B', 'x.flac')).toEqual({
+                folder: 'A/..B',
+                file: 'x.flac'
+            });
         });
     });
 });

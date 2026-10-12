@@ -30,11 +30,23 @@ const resolveReal = (target: string): string => {
     }
 };
 
-/** Directories the app owns: the download/library root, plus the export dir. */
+/** True for `/`, `C:\` or a UNC share root: every path on that volume is below it. */
+export const isFilesystemRoot = (dir: string): boolean => {
+    const resolved = path.resolve(dir);
+    return path.parse(resolved).root === resolved;
+};
+
+/**
+ * Directories the app owns: the download/library root, plus the export dir.
+ * A filesystem root is never one of them, even when configured as the
+ * download folder: it would turn every file on the volume into a "managed"
+ * file that the library routes may delete or overwrite.
+ */
 export const getManagedRoots = (): string[] =>
     [CONFIG.download.outputDir, CONFIG.export?.outputDir]
         .filter((root): root is string => typeof root === 'string' && root.trim().length > 0)
-        .map(resolveReal);
+        .map(resolveReal)
+        .filter((root) => !isFilesystemRoot(root));
 
 /**
  * True when `filePath` resolves inside a directory the app manages. The
