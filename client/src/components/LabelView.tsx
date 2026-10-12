@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { apiJson } from '../utils/api';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useNavigation } from '../contexts/NavigationContext';
+import { useLatestRequest } from '../hooks/useLatestRequest';
+import { appendPage } from '../utils/lists';
 import { AlbumGrid } from './AlbumGrid';
 import { Icons } from './Icons';
 import { errorMessage, type PageResult, type QobuzAlbumItem, type QobuzImage } from '../utils/qobuzItems';
@@ -37,24 +39,30 @@ export const LabelView: React.FC = () => {
     const [error, setError] = useState('');
     const [showFull, setShowFull] = useState(false);
 
+    const beginRequest = useLatestRequest();
+
     const load = useCallback(
         async (offset: number) => {
+            // Opening another label supersedes a slower request for the previous one.
+            const isLatest = beginRequest();
             if (!labelId) return;
             setLoading(true);
             setError('');
             try {
                 const page = await apiJson<LabelPage>(`/api/label/${encodeURIComponent(labelId)}?limit=${PAGE_SIZE}&offset=${offset}`);
+                if (!isLatest()) return;
                 setLabel(page.label);
-                setAlbums((prev) => (offset === 0 ? page.albums.items : [...prev, ...page.albums.items]));
+                setAlbums((prev) => appendPage(offset === 0 ? [] : prev, page.albums.items));
                 setTotal(page.albums.total ?? page.label.albums_count ?? null);
                 setHasMore(page.albums.has_more);
             } catch (err) {
+                if (!isLatest()) return;
                 setError(errorMessage(err));
             } finally {
-                setLoading(false);
+                if (isLatest()) setLoading(false);
             }
         },
-        [labelId]
+        [labelId, beginRequest]
     );
 
     useEffect(() => {

@@ -9,6 +9,7 @@ import { ConfirmModal } from './Modals';
 import { playTrack } from './Player';
 import { Icons } from './Icons';
 import type { OwnPlaylist } from './AddToPlaylistModal';
+import { appendPage } from '../utils/lists';
 
 interface PageResult<T> {
     items: T[];
@@ -76,7 +77,7 @@ const PlaylistDetail: React.FC<{ playlistId: string; onBack: () => void; onChang
                     `/api/me/playlists/${playlistId}?limit=${PAGE_SIZE}&offset=${offset}`
                 );
                 setDetails(page);
-                setTracks((prev) => (offset === 0 ? page.tracks.items : [...prev, ...page.tracks.items]));
+                setTracks((prev) => appendPage(offset === 0 ? [] : prev, page.tracks.items, (track) => track.playlist_track_id));
             } catch (err) {
                 setError(err instanceof Error ? err.message : String(err));
             } finally {

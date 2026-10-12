@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { apiJson } from '../utils/api';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useNavigation } from '../contexts/NavigationContext';
+import { useLatestRequest } from '../hooks/useLatestRequest';
+import { appendPage } from '../utils/lists';
 import { AlbumGrid } from './AlbumGrid';
 import { FavoriteButton } from './FavoriteButton';
 import { Icons } from './Icons';
@@ -127,8 +129,12 @@ export const ArtistDiscography: React.FC<{ artistId: string }> = ({ artistId }) 
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
 
+    const beginRequest = useLatestRequest();
+
     const load = useCallback(
         async (offset: number) => {
+            // A new release type (or artist) supersedes a slower earlier request.
+            const isLatest = beginRequest();
             setLoading(true);
             setError('');
             try {
@@ -136,16 +142,18 @@ export const ArtistDiscography: React.FC<{ artistId: string }> = ({ artistId }) 
                     `/api/artist/${encodeURIComponent(artistId)}/releases?release_type=${releaseType}` +
                         `&sort=release_date&order=desc&limit=${RELEASES_PAGE}&offset=${offset}`
                 );
-                setReleases((prev) => (offset === 0 ? page.items ?? [] : [...prev, ...(page.items ?? [])]));
+                if (!isLatest()) return;
+                setReleases((prev) => appendPage(offset === 0 ? [] : prev, page.items ?? []));
                 setHasMore(page.has_more);
             } catch (err) {
+                if (!isLatest()) return;
                 setError(errorMessage(err));
                 if (offset === 0) setReleases([]);
             } finally {
-                setLoading(false);
+                if (isLatest()) setLoading(false);
             }
         },
-        [artistId, releaseType]
+        [artistId, releaseType, beginRequest]
     );
 
     useEffect(() => {

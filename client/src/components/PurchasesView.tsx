@@ -4,6 +4,8 @@ import { useToast } from '../contexts/ToastContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useNavigation } from '../contexts/NavigationContext';
 import { useQueueActions } from '../hooks/useQueueActions';
+import { useLatestRequest } from '../hooks/useLatestRequest';
+import { appendPage } from '../utils/lists';
 import { FavoriteButton } from './FavoriteButton';
 import { ConfirmModal } from './Modals';
 import { Icons } from './Icons';
@@ -45,23 +47,29 @@ export const PurchasesView: React.FC = () => {
     const [confirmAll, setConfirmAll] = useState(false);
     const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
 
+    const beginRequest = useLatestRequest();
+
     const loadPage = useCallback(async (type: PurchaseTab, offset: number) => {
+        // A tab switch or refresh supersedes a slower earlier request.
+        const isLatest = beginRequest();
         setLoading(true);
         setError('');
         try {
             const page = await apiJson<PageResult<PurchaseItem>>(
                 `/api/purchases?type=${type}&limit=${PAGE_SIZE}&offset=${offset}`
             );
-            setItems((prev) => (offset === 0 ? page.items : [...prev, ...page.items]));
+            if (!isLatest()) return;
+            setItems((prev) => appendPage(offset === 0 ? [] : prev, page.items));
             setTotal(page.total ?? offset + page.items.length);
             setHasMore(page.has_more);
         } catch (err) {
+            if (!isLatest()) return;
             setError(errorMessage(err));
             if (offset === 0) setItems([]);
         } finally {
-            setLoading(false);
+            if (isLatest()) setLoading(false);
         }
-    }, []);
+    }, [beginRequest]);
 
     useEffect(() => {
         setItems([]);

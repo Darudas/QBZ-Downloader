@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DiscoverView } from '../DiscoverView';
 import { PurchasesView } from '../PurchasesView';
 import { LabelView } from '../LabelView';
+import { ArtistDiscography } from '../ArtistSections';
 import { useFavoritesStore } from '../../stores/favoritesStore';
 import { mockFetchRoutes } from '../../test-utils/fetchRoutes';
 
@@ -37,6 +38,15 @@ const page = <T,>(items: T[], extra: Record<string, unknown> = {}) => ({
 });
 
 const favoriteIds = () => ({ albums: [], tracks: [], artists: [] });
+
+/** A response body the test resolves later, to simulate a slow request. */
+const deferred = <T,>() => {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((res) => {
+        resolve = res;
+    });
+    return { promise, resolve };
+};
 
 beforeEach(() => {
     vi.clearAllMocks();
@@ -242,5 +252,101 @@ describe('LabelView', () => {
         expect(await screen.findByText('Label 9 could not be loaded')).toBeInTheDocument();
         fireEvent.click(screen.getByText('action_back'));
         expect(mocks.goBack).toHaveBeenCalledWith('discover');
+    });
+});
+
+describe('out-of-order responses', () => {
+    it('DiscoverView keeps the albums of the newest type when an older request resolves last', async () => {
+        const slow = deferred<unknown>();
+        mockFetchRoutes({
+            'GET /api/genres': () => ({ genres: { items: [] } }),
+            'GET /api/discover/albums': ({ url }) =>
+                url.includes('type=new-releases') ? slow.promise : page([{ id: 'pa', title: 'Awarded Album' }]),
+            'GET /api/discover/playlists': () => page([]),
+            'GET /api/favorites/ids': favoriteIds
+        });
+        render(<DiscoverView />);
+        fireEvent.change(screen.getByLabelText('label_featured_type'), { target: { value: 'press-awards' } });
+        expect(await screen.findByText('Awarded Album')).toBeInTheDocument();
+
+        slow.resolve(page([{ id: 'old', title: 'Stale Release' }]));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(screen.queryByText('Stale Release')).not.toBeInTheDocument();
+        expect(screen.getByText('Awarded Album')).toBeInTheDocument();
+    });
+
+    it('PurchasesView keeps the newest tab when the previous tab answers late', async () => {
+        const slow = deferred<unknown>();
+        mockFetchRoutes({
+            'GET /api/purchases': ({ url }) =>
+                url.includes('type=albums') ? slow.promise : page([{ id: 3, title: 'Bought Track' }]),
+            'GET /api/favorites/ids': favoriteIds
+        });
+        render(<PurchasesView />);
+        fireEvent.click(screen.getByRole('tab', { name: 'label_tracks' }));
+        expect(await screen.findByText('Bought Track')).toBeInTheDocument();
+
+        slow.resolve(page([{ id: 'alb', title: 'Late Album' }]));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(screen.queryByText('Late Album')).not.toBeInTheDocument();
+        expect(screen.getByText('Bought Track')).toBeInTheDocument();
+    });
+
+    it('ArtistDiscography keeps the newest release type', async () => {
+        const slow = deferred<unknown>();
+        mockFetchRoutes({
+            'GET /api/artist/5/releases': ({ url }) =>
+                url.includes('release_type=all') ? slow.promise : page([{ id: 'live1', title: 'Live Set' }]),
+            'GET /api/favorites/ids': favoriteIds
+        });
+        render(<ArtistDiscography artistId="5" />);
+        fireEvent.change(screen.getByLabelText('label_release_type'), { target: { value: 'live' } });
+        expect(await screen.findByText('Live Set')).toBeInTheDocument();
+
+        slow.resolve(page([{ id: 'all1', title: 'Everything' }]));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(screen.queryByText('Everything')).not.toBeInTheDocument();
+        expect(screen.getByText('Live Set')).toBeInTheDocument();
+    });
+
+    it('LabelView shows the label opened last', async () => {
+        const slow = deferred<unknown>();
+        mockFetchRoutes({
+            'GET /api/label/1': () => slow.promise,
+            'GET /api/label/2': () => ({ label: { id: 2, name: 'Second Label' }, albums: page([]) }),
+            'GET /api/favorites/ids': favoriteIds
+        });
+        mocks.navData = { id: '1' };
+        const { rerender } = render(<LabelView />);
+        mocks.navData = { id: '2' };
+        rerender(<LabelView />);
+        expect(await screen.findByText('Second Label')).toBeInTheDocument();
+
+        slow.resolve({ label: { id: 1, name: 'First Label' }, albums: page([]) });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(screen.queryByText('First Label')).not.toBeInTheDocument();
+        expect(screen.getByText('Second Label')).toBeInTheDocument();
+    });
+});
+
+describe('overlapping pages', () => {
+    it('does not repeat an album that appears on two pages', async () => {
+        const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+        mockFetchRoutes({
+            'GET /api/genres': () => ({ genres: { items: [] } }),
+            'GET /api/discover/albums': ({ url }) =>
+                url.includes('offset=0')
+                    ? page([{ id: 'x1', title: 'Shared Album' }], { has_more: true })
+                    : page([{ id: 'x1', title: 'Shared Album' }, { id: 'x2', title: 'Next Album' }]),
+            'GET /api/discover/playlists': () => page([]),
+            'GET /api/favorites/ids': favoriteIds
+        });
+        render(<DiscoverView />);
+        await screen.findByText('Shared Album');
+        fireEvent.click(screen.getByText('action_load_more'));
+        expect(await screen.findByText('Next Album')).toBeInTheDocument();
+        expect(screen.getAllByText('Shared Album')).toHaveLength(1);
+        expect(errors.mock.calls.some((call) => String(call[0]).includes('same key'))).toBe(false);
+        errors.mockRestore();
     });
 });

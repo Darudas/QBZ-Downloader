@@ -4,6 +4,7 @@ import { useNavigation } from '../contexts/NavigationContext';
 import { useQueueActions } from '../hooks/useQueueActions';
 import { FavoriteButton } from './FavoriteButton';
 import { Icons } from './Icons';
+import { uniqueBy } from '../utils/lists';
 import { albumArtist, albumCover, albumTitle, isHiRes, releaseYear, type QobuzAlbumItem } from '../utils/qobuzItems';
 
 interface AlbumGridProps {
@@ -22,7 +23,8 @@ export const AlbumGrid: React.FC<AlbumGridProps> = ({ albums, subtitle, extraAct
 
     return (
         <div className="results-grid">
-            {albums.map((album) => {
+            {/* Overlapping pages must not produce duplicate React keys. */}
+            {uniqueBy(albums).map((album) => {
                 const id = String(album.id);
                 const title = albumTitle(album);
                 const cover = albumCover(album, 'large');

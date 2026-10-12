@@ -3,6 +3,8 @@ import { apiJson } from '../utils/api';
 import { useToast } from '../contexts/ToastContext';
 import { useLanguage } from '../contexts/LanguageContext';
 import { useQueueActions } from '../hooks/useQueueActions';
+import { useLatestRequest } from '../hooks/useLatestRequest';
+import { appendPage } from '../utils/lists';
 import { AlbumGrid } from './AlbumGrid';
 import { Icons } from './Icons';
 import {
@@ -82,44 +84,54 @@ export const DiscoverView: React.FC = () => {
 
     const genreQuery = genreId ? `&genre_id=${encodeURIComponent(genreId)}` : '';
 
+    // Changing the type or genre supersedes a slower earlier request of the same list.
+    const beginAlbumsRequest = useLatestRequest();
+    const beginPlaylistsRequest = useLatestRequest();
+
     const loadAlbums = useCallback(
         async (offset: number) => {
+            const isLatest = beginAlbumsRequest();
             setAlbumsLoading(true);
             setAlbumsError('');
             try {
                 const page = await apiJson<PageResult<QobuzAlbumItem>>(
                     `/api/discover/albums?type=${albumType}${genreQuery}&limit=${ALBUM_PAGE}&offset=${offset}`
                 );
-                setAlbums((prev) => (offset === 0 ? page.items : [...prev, ...page.items]));
+                if (!isLatest()) return;
+                setAlbums((prev) => appendPage(offset === 0 ? [] : prev, page.items));
                 setAlbumsMore(page.has_more);
             } catch (err) {
+                if (!isLatest()) return;
                 setAlbumsError(errorMessage(err));
                 if (offset === 0) setAlbums([]);
             } finally {
-                setAlbumsLoading(false);
+                if (isLatest()) setAlbumsLoading(false);
             }
         },
-        [albumType, genreQuery]
+        [albumType, genreQuery, beginAlbumsRequest]
     );
 
     const loadPlaylists = useCallback(
         async (offset: number) => {
+            const isLatest = beginPlaylistsRequest();
             setPlaylistsLoading(true);
             setPlaylistsError('');
             try {
                 const page = await apiJson<PageResult<QobuzPlaylistItem>>(
                     `/api/discover/playlists?type=${playlistType}${genreQuery}&limit=${PLAYLIST_PAGE}&offset=${offset}`
                 );
-                setPlaylists((prev) => (offset === 0 ? page.items : [...prev, ...page.items]));
+                if (!isLatest()) return;
+                setPlaylists((prev) => appendPage(offset === 0 ? [] : prev, page.items));
                 setPlaylistsMore(page.has_more);
             } catch (err) {
+                if (!isLatest()) return;
                 setPlaylistsError(errorMessage(err));
                 if (offset === 0) setPlaylists([]);
             } finally {
-                setPlaylistsLoading(false);
+                if (isLatest()) setPlaylistsLoading(false);
             }
         },
-        [playlistType, genreQuery]
+        [playlistType, genreQuery, beginPlaylistsRequest]
     );
 
     useEffect(() => {

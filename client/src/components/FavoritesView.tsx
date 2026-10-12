@@ -5,6 +5,8 @@ import { useLanguage } from '../contexts/LanguageContext';
 import { useNavigation } from '../contexts/NavigationContext';
 import { useQueueActions } from '../hooks/useQueueActions';
 import { useFavoritesStore } from '../stores/favoritesStore';
+import { useLatestRequest } from '../hooks/useLatestRequest';
+import { appendPage } from '../utils/lists';
 import { FavoriteButton } from './FavoriteButton';
 import { AddToPlaylistModal } from './AddToPlaylistModal';
 import { ConfirmModal } from './Modals';
@@ -76,25 +78,31 @@ export const FavoritesView: React.FC = () => {
     const [downloading, setDownloading] = useState(false);
     const [playlistTarget, setPlaylistTarget] = useState<{ trackIds?: string[]; albumId?: string; label: string } | null>(null);
 
+    const beginRequest = useLatestRequest();
+
     const loadPage = useCallback(
         async (type: FavoriteTab, offset: number) => {
+            // A tab switch or refresh supersedes a slower earlier request.
+            const isLatest = beginRequest();
             setLoading(true);
             setError('');
             try {
                 const page = await apiJson<PageResult<FavoriteItem>>(
                     `/api/favorites?type=${type}&limit=${PAGE_SIZE}&offset=${offset}`
                 );
-                setItems((prev) => (offset === 0 ? page.items : [...prev, ...page.items]));
+                if (!isLatest()) return;
+                setItems((prev) => appendPage(offset === 0 ? [] : prev, page.items));
                 setTotal(page.total);
                 setHasMore(page.has_more);
             } catch (err) {
+                if (!isLatest()) return;
                 setError(err instanceof Error ? err.message : String(err));
                 if (offset === 0) setItems([]);
             } finally {
-                setLoading(false);
+                if (isLatest()) setLoading(false);
             }
         },
-        []
+        [beginRequest]
     );
 
     useEffect(() => {

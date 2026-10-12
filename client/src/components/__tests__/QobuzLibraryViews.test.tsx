@@ -109,6 +109,28 @@ describe('FavoritesView', () => {
     });
 });
 
+describe('FavoritesView request order', () => {
+    it('keeps the newest tab when the previous tab answers late', async () => {
+        let resolveAlbums!: (value: unknown) => void;
+        const slowAlbums = new Promise((resolve) => {
+            resolveAlbums = resolve;
+        });
+        mockFetchRoutes({
+            'GET /api/favorites/ids': () => ({ albums: ['a1'], tracks: ['7'], artists: [] }),
+            'GET /api/favorites': ({ url }) =>
+                url.includes('type=albums') ? slowAlbums : page([{ id: 7, title: 'Fresh Song' }])
+        });
+        render(<FavoritesView />);
+        fireEvent.click(screen.getByRole('tab', { name: 'label_tracks' }));
+        expect(await screen.findByText('Fresh Song')).toBeInTheDocument();
+
+        resolveAlbums(page([{ id: 'a1', title: 'Late Album' }]));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(screen.queryByText('Late Album')).not.toBeInTheDocument();
+        expect(screen.getByText('Fresh Song')).toBeInTheDocument();
+    });
+});
+
 describe('AddToPlaylistModal', () => {
     it('adds tracks to an existing playlist', async () => {
         const onClose = vi.fn();
