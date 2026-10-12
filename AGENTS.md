@@ -96,6 +96,14 @@ gh api repos/:owner/:repo/rules/branches/main
 
 When editing a ruleset over REST, the review rule type is `pull_request` (not `required_pull_request`), and there is no standalone conversation-resolution rule — it is the `required_review_thread_resolution` parameter inside `pull_request`. Wrong names return HTTP 422 `data matches no possible input`.
 
+## Qobuz library + MCP work in progress
+
+`docs/qobuz-library-and-mcp.md` is the plan and status for the Qobuz user-library features and the
+MCP (AI control) endpoint: architecture decisions, the security model for `/mcp`, the tool catalogue,
+new settings keys, what is done and what is still open. Read it before touching
+`src/api/qobuz.ts`, `src/services/qobuz-library/`, `src/services/download-actions.ts`, the queue, or
+anything MCP-related.
+
 ## Key bug history (for context when editing related code)
 
 - **Format 1 preview bypass** (`src/api/qobuz.ts:423-440`): format_id=1 was being overwritten by quality detection (bit_depth/mime_type), bypassing sample rejection in `download.ts`. Fixed with early return when `rawFormatId === 1`.

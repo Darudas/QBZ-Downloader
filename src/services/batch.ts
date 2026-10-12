@@ -6,6 +6,8 @@ import { parse } from 'csv-parse/sync';
 import { logger } from '../utils/logger.js';
 import { CONFIG } from '../config.js';
 import { downloadQueue } from './queue/queue.js';
+import { QueueItem } from './queue/types.js';
+import { isDownloadType } from './queue/utils.js';
 import { inputValidator } from '../utils/validator.js';
 import { notifyBatchZipCreated } from './notifications.js';
 
@@ -152,6 +154,14 @@ interface BatchStatus {
     failed: number;
     files: string[];
     createdAt: number;
+    /**
+     * Queue items this batch still waits for. Tracked by queue id rather than
+     * by `metadata.batchId`: a URL that deduplicates onto an item that was
+     * already queued must still count, and that item carries no batch id.
+     */
+    pendingItemIds: Set<string>;
+    /** False while URLs are still being enqueued, so the batch cannot finalize early. */
+    enqueueDone: boolean;
 }
 
 interface BatchArtifact {
@@ -168,27 +178,41 @@ export class BatchImportService {
     }
 
     private setupListeners() {
-        downloadQueue.on('item:completed', (item: any) => {
-            if (item.metadata && item.metadata.batchId) {
-                const batchId = String(item.metadata.batchId);
-                if (item.metadata.batchFiles && Array.isArray(item.metadata.batchFiles)) {
-                    this.updateBatchProgress(
-                        batchId,
-                        'completed',
-                        undefined,
-                        item.metadata.batchFiles as string[]
-                    );
-                } else {
-                    this.updateBatchProgress(batchId, 'completed', item.filePath);
-                }
+        downloadQueue.on('item:completed', (value: unknown) => {
+            const item = value as QueueItem;
+            const batchFiles = item.metadata?.batchFiles;
+            if (Array.isArray(batchFiles)) {
+                this.settleItem(item.id, 'completed', undefined, batchFiles);
+            } else {
+                this.settleItem(item.id, 'completed', item.filePath);
             }
         });
 
-        downloadQueue.on('item:failed', (item: any) => {
-            if (item.metadata && item.metadata.batchId) {
-                this.updateBatchProgress(String(item.metadata.batchId), 'failed');
-            }
+        // item:failed fires on every attempt; only a failure without a
+        // scheduled retry is final for the batch.
+        downloadQueue.on('item:failed', (value: unknown) => {
+            const item = value as QueueItem;
+            if (item.awaitingRetry) return;
+            this.settleItem(item.id, 'failed');
         });
+        downloadQueue.on('item:cancelled', (value: unknown) => {
+            this.settleItem((value as QueueItem).id, 'failed');
+        });
+        downloadQueue.on('item:removed', (value: unknown) => {
+            this.settleItem((value as QueueItem).id, 'failed');
+        });
+    }
+
+    private settleItem(
+        itemId: string,
+        status: 'completed' | 'failed',
+        filePath?: string,
+        batchFiles?: string[]
+    ) {
+        for (const batch of Array.from(this.activeBatches.values())) {
+            if (!batch.pendingItemIds.delete(itemId)) continue;
+            this.updateBatchProgress(batch.id, status, filePath, batchFiles);
+        }
     }
 
     private updateBatchProgress(
@@ -213,14 +237,20 @@ export class BatchImportService {
             'BATCH'
         );
 
-        if (batch.completed + batch.failed >= batch.total) {
-            this.finalizeBatch(batchId);
+        this.maybeFinalize(batch);
+    }
+
+    private maybeFinalize(batch: BatchStatus) {
+        if (batch.enqueueDone && batch.pendingItemIds.size === 0) {
+            void this.finalizeBatch(batch.id);
         }
     }
 
     private async finalizeBatch(batchId: string) {
         const batch = this.activeBatches.get(batchId);
         if (!batch) return;
+        // Removed before the (slow) ZIP step so a late event cannot finalize twice.
+        this.activeBatches.delete(batchId);
 
         if (batch.files.length > 0) {
             logger.info(
@@ -234,8 +264,6 @@ export class BatchImportService {
                 'BATCH'
             );
         }
-
-        this.activeBatches.delete(batchId);
     }
 
     private async createZipArchive(batch: BatchStatus) {
@@ -564,50 +592,76 @@ export class BatchImportService {
         const errors: string[] = [];
         const batchId = createZip ? crypto.randomUUID() : undefined;
 
-        if (batchId) {
-            this.activeBatches.set(batchId, {
-                id: batchId,
-                total: urls.length,
-                completed: 0,
-                failed: 0,
-                files: [],
-                createdAt: Date.now()
-            });
-        }
+        const batch: BatchStatus | undefined = batchId
+            ? {
+                  id: batchId,
+                  total: 0,
+                  completed: 0,
+                  failed: 0,
+                  files: [],
+                  createdAt: Date.now(),
+                  pendingItemIds: new Set<string>(),
+                  enqueueDone: false
+              }
+            : undefined;
+        if (batch) this.activeBatches.set(batch.id, batch);
 
         for (const url of urls) {
             try {
-                await this.addToQueue(url, quality, batchId);
+                const item = await this.addToQueue(url, quality, batchId);
                 imported++;
+                // Two URLs for the same content share one queue item; the
+                // batch waits for that item once.
+                if (batch && !batch.pendingItemIds.has(item.id)) {
+                    batch.pendingItemIds.add(item.id);
+                    batch.total++;
+                }
             } catch (error: unknown) {
                 failed++;
                 errors.push(`${url}: ${(error as Error).message}`);
-                if (batchId) {
-                    this.updateBatchProgress(batchId, 'failed');
-                }
             }
+        }
+
+        if (batch) {
+            batch.enqueueDone = true;
+            this.maybeFinalize(batch);
         }
 
         return { success: failed === 0, imported, failed, errors };
     }
 
-    private async addToQueue(url: string, quality: number, batchId?: string): Promise<void> {
+    private async addToQueue(url: string, quality: number, batchId?: string): Promise<QueueItem> {
         const validation = inputValidator.validateUrl(url);
 
         if (!validation.valid) {
             throw new Error(validation.error || 'Invalid URL');
         }
 
-        if (validation.type && validation.id) {
-            const type = validation.type as 'track' | 'album' | 'playlist' | 'artist';
-            downloadQueue.add(type, validation.id, quality, {
-                title: `${type}: ${validation.id}`,
-                metadata: { source: 'batch-import', batchId }
-            });
-            logger.info(`Added ${type} ${validation.id} to queue from batch import`, 'BATCH');
-        } else {
+        if (!validation.type || !validation.id) {
             throw new Error('Could not parse URL type/id');
         }
+
+        // validateUrl also recognises Spotify links (spotify_track, ...);
+        // queued as-is they became bogus items processed as artists.
+        if (validation.type.startsWith('spotify')) {
+            throw new Error('Spotify links cannot be queued directly; use the Spotify import instead');
+        }
+        if (!isDownloadType(validation.type)) {
+            throw new Error(`Unsupported link type: ${validation.type}`);
+        }
+
+        const type = validation.type;
+        const { item, deduped } = downloadQueue.addWithResult(type, validation.id, quality, {
+            title: `${type}: ${validation.id}`,
+            metadata: { source: 'batch-import', ...(batchId ? { batchId } : {}) }
+        });
+        logger.info(
+            deduped
+                ? `${type} ${validation.id} from batch import is already queued (${item.id})`
+                : `Added ${type} ${validation.id} to queue from batch import`,
+            'BATCH'
+        );
+        return item;
     }
 }
 

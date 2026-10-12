@@ -42,7 +42,10 @@ vi.mock('./database/index.js', () => ({
 vi.mock('./queue/queue.js', () => ({
     downloadQueue: {
         hasContent: vi.fn().mockReturnValue(false),
-        add: vi.fn()
+        add: vi.fn(),
+        addWithResult: vi.fn().mockReturnValue({ item: {}, deduped: false }),
+        getAll: vi.fn().mockReturnValue([]),
+        on: vi.fn()
     }
 }));
 
@@ -113,8 +116,8 @@ describe('PlaylistWatcherService', () => {
             await service.scanAllPlaylists();
 
             expect(mockApi.getPlaylist).toHaveBeenCalledWith('pl1');
-            expect(downloadQueue.add).toHaveBeenCalledTimes(1);
-            expect(downloadQueue.add).toHaveBeenCalledWith(
+            expect(downloadQueue.addWithResult).toHaveBeenCalledTimes(1);
+            expect(downloadQueue.addWithResult).toHaveBeenCalledWith(
                 'track', 
                 'new1', 
                 expect.any(Number), 

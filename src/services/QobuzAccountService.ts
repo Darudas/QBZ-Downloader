@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import { settingsService } from './settings.js';
 import { tokenManager } from '../utils/token.js';
+import { clearUserScopedCache } from '../utils/cache.js';
 
 export interface QobuzAccount {
     id: string;
@@ -169,6 +170,7 @@ export class QobuzAccountService {
                 QOBUZ_USER_ID: ''
             });
             tokenManager.clearValidation();
+            clearUserScopedCache();
         }
 
         return true;
@@ -191,6 +193,9 @@ export class QobuzAccountService {
             QOBUZ_USER_ID: account.userId
         });
         tokenManager.clearValidation();
+        // Favorites, playlists etc. of the previous account must never be served
+        // to the new one (setMany also triggers this via SETTINGS.UPDATED).
+        clearUserScopedCache();
     }
 }
 

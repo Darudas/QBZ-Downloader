@@ -1,4 +1,7 @@
 import { Router, Request, Response } from 'express';
+import path from 'path';
+import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { z } from 'zod';
 import { downloadQueue } from '../../queue/queue.js';
 import { historyService } from '../../history.js';
 import { databaseService } from '../../database/index.js';
@@ -6,144 +9,390 @@ import { migrationService } from '../../migration.js';
 import qobuzApi from '../../../api/qobuz.js';
 import { logger } from '../../../utils/logger.js';
 import { CONFIG, normalizeDownloadQuality } from '../../../config.js';
-import { validateEnvironment } from '../../../utils/env.js';
-import { queueProcessor } from '../../queue-processor.js';
+import { isPathWithinManagedRoots } from '../../../utils/paths.js';
+import {
+    contentIdSchema,
+    downloadActionsService,
+    downloadQualitySchema,
+    downloadTypeSchema,
+    MAX_ENQUEUE_TRACK_IDS,
+    MAX_ENQUEUE_URLS,
+    QUEUE_LIST_MAX_LIMIT,
+    queuePrioritySchema,
+    QueueRequestError,
+    queueStatusFilterSchema
+} from '../../download-actions.js';
+import { parseBody, parseParams, parseQuery, routeErrorHandler } from './route-utils.js';
 
 const router = Router();
 const api = qobuzApi;
 
-const getParam = (p: unknown): string => (Array.isArray(p) ? String(p[0]) : String(p ?? ''));
+/* ------------------------------------------------------------------ */
+/* Schemas                                                              */
+/* ------------------------------------------------------------------ */
 
-function ensureQueueReady(res: Response): boolean {
-    const { valid, missing } = validateEnvironment(false);
-    if (!valid) {
-        res.status(400).json({
-            error: `Missing required credentials: ${missing?.join(', ')}. Please complete setup in Settings first.`
-        });
-        return false;
-    }
+const optionalQuality = downloadQualitySchema.nullish();
 
-    queueProcessor.start();
-    return true;
-}
-
-router.get('/queue', (req: Request, res: Response) => {
-    res.json(downloadQueue.getAll());
+const queueItemParams = z.object({
+    id: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, 'Invalid queue item id')
 });
 
-router.post('/queue/add', async (req: Request, res: Response) => {
-    const { type, id, quality, title, priority, metadata } = req.body;
-    if (!type || !id) {
-        res.status(400).json({ error: 'type and id are required' });
+const queueListQuery = z.object({
+    status: queueStatusFilterSchema.optional(),
+    limit: z.coerce.number().int().min(1).max(QUEUE_LIST_MAX_LIMIT).optional(),
+    offset: z.coerce.number().int().min(0).optional()
+});
+
+// Unknown keys (notably `metadata`) are dropped: queue metadata is built on
+// the server only. Upgrade metadata deletes a file after the download.
+const queueAddBody = z
+    .object({
+        type: downloadTypeSchema.optional(),
+        id: contentIdSchema.optional(),
+        url: z.string().trim().min(1).max(2048).optional(),
+        quality: optionalQuality,
+        priority: queuePrioritySchema.optional(),
+        title: z.string().max(300).optional()
+    })
+    .refine((body) => body.url !== undefined || (body.type !== undefined && body.id !== undefined), {
+        message: 'type and id (or url) are required'
+    });
+
+const queueActionBody = z.object({
+    action: z.enum(['pause', 'resume', 'clear', 'clear-completed', 'clear-pending', 'retry-failed'])
+});
+
+const priorityBody = z.object({ priority: queuePrioritySchema });
+
+const legacyItemParams = z.object({
+    id: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, 'Invalid queue item id'),
+    action: z.enum(['cancel', 'remove', 'retry'])
+});
+
+const trackIdsSchema = z.array(contentIdSchema).min(1).max(MAX_ENQUEUE_TRACK_IDS);
+
+const downloadBody = z.object({
+    type: downloadTypeSchema,
+    id: contentIdSchema,
+    quality: optionalQuality,
+    priority: queuePrioritySchema.optional(),
+    trackIds: trackIdsSchema.optional(),
+    skipExisting: z.boolean().optional()
+});
+
+const simpleDownloadBody = z.object({
+    id: contentIdSchema,
+    quality: optionalQuality,
+    priority: queuePrioritySchema.optional(),
+    skipExisting: z.boolean().optional()
+});
+
+const albumDownloadBody = simpleDownloadBody.extend({
+    /** Zero-based positions in the album's track list. */
+    indices: z.array(z.number().int().min(0).max(9999)).min(1).max(MAX_ENQUEUE_TRACK_IDS).optional(),
+    trackIds: trackIdsSchema.optional()
+});
+
+const urlsDownloadBody = z.object({
+    urls: z.array(z.string().max(2048)).min(1).max(MAX_ENQUEUE_URLS),
+    quality: optionalQuality,
+    priority: queuePrioritySchema.optional(),
+    skipExisting: z.boolean().optional()
+});
+
+const historyQuery = z.object({
+    q: z.string().max(200).optional(),
+    // Same bound as HISTORY_MAX_LIMIT in history.ts.
+    limit: z.coerce.number().int().min(1).max(500).optional(),
+    offset: z.coerce.number().int().min(0).optional()
+});
+
+const historyIdParams = z.object({
+    id: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/, 'Invalid history id')
+});
+
+const trackIdParams = z.object({
+    id: z.string().regex(/^\d{1,20}$/, 'Invalid track id')
+});
+
+const lyricsSaveBody = z.object({
+    content: z.string().min(1).max(512 * 1024)
+});
+
+const lyricsDownloadBody = z.object({
+    trackId: z.union([z.string().regex(/^\d{1,20}$/), z.number().int().positive()])
+});
+
+const albumZipBody = z.object({
+    albumId: z.union([z.string().regex(/^[A-Za-z0-9]{1,40}$/), z.number().int().positive()])
+});
+
+/* ------------------------------------------------------------------ */
+/* Helpers                                                              */
+/* ------------------------------------------------------------------ */
+
+const hasAnyQuery = (req: Request, keys: string[]): boolean =>
+    keys.some((key) => req.query[key] !== undefined);
+
+/** `<dir>/<name>.lrc` next to an audio file, for any extension (or none). */
+export function lrcPathFor(audioPath: string): string {
+    const { dir, name } = path.parse(audioPath);
+    return path.join(dir, `${name}.lrc`);
+}
+
+/** The `.lrc` sidecar for a history entry, or null when it would land outside the library. */
+function managedLrcPath(audioPath: unknown): string | null {
+    if (typeof audioPath !== 'string' || !audioPath.trim()) return null;
+    const lrcPath = lrcPathFor(audioPath);
+    return isPathWithinManagedRoots(lrcPath) ? lrcPath : null;
+}
+
+/**
+ * A CSV cell that starts with =, +, -, @, tab or CR is run as a formula by
+ * spreadsheet apps; titles come from Qobuz, so neutralize them.
+ */
+export function csvCell(value: unknown): string {
+    let text = value === undefined || value === null ? '' : String(value);
+    if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+    return `"${text.replace(/"/g, '""')}"`;
+}
+
+const safeArchiveName = (value: string): string =>
+    // eslint-disable-next-line no-control-regex
+    value.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').trim().slice(0, 180) || 'lyrics';
+
+/* ------------------------------------------------------------------ */
+/* Queue                                                                */
+/* ------------------------------------------------------------------ */
+
+router.get('/queue', (req: Request, res: Response) => {
+    // Without parameters keep the array the dashboard queue view expects.
+    if (!hasAnyQuery(req, ['status', 'limit', 'offset'])) {
+        res.json(downloadQueue.getAll());
         return;
     }
-    if (!ensureQueueReady(res)) return;
+    const query = parseQuery(queueListQuery, req.query);
+    res.json(downloadActionsService.getQueue(query));
+});
 
-    const q = normalizeDownloadQuality(quality, CONFIG.quality.default);
-    const item = downloadQueue.add(type, id, q, { title, priority, metadata });
+router.get('/queue/item/:id', (req: Request, res: Response) => {
+    const { id } = parseParams(queueItemParams, req.params);
+    const item = downloadActionsService.getQueueItem(id);
+    if (!item) {
+        res.status(404).json({ error: 'Queue item not found', code: 'NOT_FOUND' });
+        return;
+    }
     res.json(item);
 });
 
+router.post('/queue/add', async (req: Request, res: Response) => {
+    const body = parseBody(queueAddBody, req.body);
+
+    if (body.url !== undefined) {
+        const result = await downloadActionsService.enqueueUrls([body.url], body.quality, {
+            priority: body.priority,
+            source: 'dashboard'
+        });
+        const entry = result.results[0];
+        if (!entry?.ok || !entry.queueId) {
+            throw new QueueRequestError(entry?.error || 'Could not add this link', 400, 'VALIDATION_ERROR');
+        }
+        res.json({
+            id: entry.queueId,
+            queueId: entry.queueId,
+            type: entry.type,
+            contentId: entry.id,
+            title: entry.title,
+            deduped: entry.deduped === true
+        });
+        return;
+    }
+
+    const result = await downloadActionsService.enqueue({
+        type: body.type!,
+        id: body.id!,
+        quality: body.quality,
+        priority: body.priority,
+        title: body.title,
+        source: 'dashboard'
+    });
+    const entry = result.items[0]!;
+    res.json({
+        id: entry.queueId,
+        queueId: entry.queueId,
+        type: entry.type,
+        contentId: entry.id,
+        title: entry.title,
+        status: entry.status,
+        deduped: entry.deduped
+    });
+});
+
 router.post('/queue/action', (req: Request, res: Response) => {
-    const { action } = req.body;
+    const { action } = parseBody(queueActionBody, req.body);
     switch (action) {
         case 'pause':
-            downloadQueue.pause();
+            downloadActionsService.pause();
             res.json({ success: true });
-            break;
+            return;
         case 'resume':
-            downloadQueue.resume();
+            downloadActionsService.resume();
             res.json({ success: true });
-            break;
+            return;
         case 'clear':
-            downloadQueue.clear();
-            res.json({ success: true });
-            break;
-        case 'clear-completed': {
-            const count = downloadQueue.clearCompleted();
-            res.json({ success: true, count });
-            break;
-        }
-        default:
-            res.status(400).json({ error: 'Invalid action' });
+            res.json({ success: true, count: downloadQueue.clear() });
+            return;
+        case 'clear-completed':
+            res.json({ success: true, count: downloadActionsService.clearCompleted() });
+            return;
+        case 'clear-pending':
+            res.json({ success: true, count: downloadActionsService.clearPending() });
+            return;
+        case 'retry-failed':
+            res.json({ success: true, count: downloadActionsService.retryFailed() });
+            return;
     }
 });
 
+router.post('/queue/retry-failed', (_req: Request, res: Response) => {
+    res.json({ success: true, count: downloadActionsService.retryFailed() });
+});
+
+router.post('/queue/item/:id/retry', (req: Request, res: Response) => {
+    const { id } = parseParams(queueItemParams, req.params);
+    res.json({ success: true, item: downloadActionsService.retry(id) });
+});
+
+router.post('/queue/item/:id/cancel', (req: Request, res: Response) => {
+    const { id } = parseParams(queueItemParams, req.params);
+    res.json({ success: true, item: downloadActionsService.cancel(id) });
+});
+
+router.post('/queue/item/:id/priority', (req: Request, res: Response) => {
+    const { id } = parseParams(queueItemParams, req.params);
+    const { priority } = parseBody(priorityBody, req.body);
+    res.json({ success: true, item: downloadActionsService.setPriority(id, priority) });
+});
+
+router.delete('/queue/item/:id', (req: Request, res: Response) => {
+    const { id } = parseParams(queueItemParams, req.params);
+    res.json({ success: true, result: downloadActionsService.remove(id) });
+});
+
+// Legacy per-item endpoint used by the dashboard queue view. It answers 200
+// with `success: false` when the action does not apply, as it always has.
 router.post('/item/:id/:action', (req: Request, res: Response) => {
-    const { id, action } = req.params;
-    switch (action) {
-        case 'cancel':
-        case 'remove': {
-            const trackId = getParam(id);
-            const success = downloadQueue.remove(trackId) || downloadQueue.cancel(trackId);
-            res.json({ success });
-            break;
+    const { id, action } = parseParams(legacyItemParams, req.params);
+    try {
+        if (action === 'retry') downloadActionsService.retry(id);
+        else if (action === 'remove') downloadActionsService.remove(id);
+        else downloadActionsService.cancel(id);
+        res.json({ success: true });
+    } catch (error: unknown) {
+        if (error instanceof QueueRequestError && error.statusCode !== 400) {
+            res.json({ success: false, error: error.message });
+            return;
         }
-        default:
-            res.status(400).json({ error: 'Invalid action' });
+        throw error;
     }
 });
 
-router.post('/download/track', (req: Request, res: Response) => {
-    const { id, quality } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required' });
-    if (!ensureQueueReady(res)) return;
-    const q = normalizeDownloadQuality(quality, CONFIG.quality.default);
-    downloadQueue.add('track', id, q);
-    res.json({ success: true });
+/* ------------------------------------------------------------------ */
+/* Downloads (all enqueue and return immediately)                       */
+/* ------------------------------------------------------------------ */
+
+router.post('/download', async (req: Request, res: Response) => {
+    const body = parseBody(downloadBody, req.body);
+    const result = await downloadActionsService.enqueue({ ...body, source: 'dashboard' });
+    res.json({ success: true, count: result.items.length, ...result });
+});
+
+router.post('/download/track', async (req: Request, res: Response) => {
+    const body = parseBody(simpleDownloadBody, req.body);
+    const result = await downloadActionsService.enqueue({ type: 'track', ...body, source: 'dashboard' });
+    res.json({ success: true, count: result.items.length, ...result });
 });
 
 router.post('/download/album', async (req: Request, res: Response) => {
-    const { id, quality, indices } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required' });
-    if (!ensureQueueReady(res)) return;
-    const q = normalizeDownloadQuality(quality, CONFIG.quality.default);
+    const { indices, trackIds, ...body } = parseBody(albumDownloadBody, req.body);
+    let selected = trackIds;
 
-    const result = await api.getAlbum(id);
-    if (result.success && result.data) {
-        const album = result.data as Record<string, unknown>;
-        const tracks = (album.tracks as { items: Record<string, unknown>[] })?.items || [];
-        const toDownload = indices
-            ? tracks.filter((_, i: number) => (indices as number[]).includes(i))
-            : tracks;
-
-        toDownload.forEach((track) => {
-            downloadQueue.add('track', String(track.id), q, { metadata: { album } } as any);
-        });
-
-        res.json({ success: true, count: toDownload.length });
-    } else {
-        res.status(500).json({ error: result.error });
+    if (indices) {
+        const albumId = downloadActionsService.normalizeId('album', body.id);
+        const albumRes = await api.getAlbum(albumId);
+        if (!albumRes.success || !albumRes.data) {
+            throw new QueueRequestError('Album not found', 404, 'NOT_FOUND');
+        }
+        const tracks = albumRes.data.tracks?.items ?? [];
+        const outOfRange = indices.filter((index) => index >= tracks.length);
+        if (outOfRange.length > 0) {
+            throw new QueueRequestError(
+                `Track index out of range: ${outOfRange.slice(0, 10).join(', ')}`,
+                400,
+                'VALIDATION_ERROR'
+            );
+        }
+        const fromIndices = indices.map((index) => String(tracks[index]!.id));
+        selected = [...(trackIds ?? []).map(String), ...fromIndices];
     }
+
+    const result = await downloadActionsService.enqueue({
+        type: 'album',
+        ...body,
+        trackIds: selected,
+        source: 'dashboard'
+    });
+    res.json({ success: true, count: result.items.length, ...result });
 });
 
-router.post('/download/artist', async (req: Request, res: Response) => {
-    const { id, quality } = req.body;
-    if (!id) return res.status(400).json({ error: 'ID is required' });
-    if (!ensureQueueReady(res)) return;
-    const q = normalizeDownloadQuality(quality, CONFIG.quality.default);
+for (const type of ['playlist', 'artist', 'label'] as const) {
+    router.post(`/download/${type}`, async (req: Request, res: Response) => {
+        const body = parseBody(simpleDownloadBody, req.body);
+        const result = await downloadActionsService.enqueue({ type, ...body, source: 'dashboard' });
+        res.json({ success: true, count: result.items.length, ...result });
+    });
+}
 
-    const { downloadService } = await import('../../queue-processor.js');
-    const result = await downloadService.downloadArtist(id, q);
-
-    if (result.success) {
-        res.json({ success: true, count: result.completedTracks });
-    } else {
-        res.status(500).json({ error: result.error || 'Failed to download artist discography' });
-    }
+router.post('/download/urls', async (req: Request, res: Response) => {
+    const body = parseBody(urlsDownloadBody, req.body);
+    const result = await downloadActionsService.enqueueUrls(body.urls, body.quality, {
+        priority: body.priority,
+        skipExisting: body.skipExisting,
+        source: 'dashboard'
+    });
+    res.json({ success: result.failed === 0, ...result });
 });
+
+/* ------------------------------------------------------------------ */
+/* History                                                              */
+/* ------------------------------------------------------------------ */
 
 router.get('/history', (req: Request, res: Response) => {
-    res.json(Object.entries(historyService.getAll()).map(([id, data]) => ({ id, ...data })));
+    // Without parameters keep the array the dashboard history view expects.
+    if (!hasAnyQuery(req, ['q', 'limit', 'offset'])) {
+        res.json(Object.entries(historyService.getAll()).map(([id, data]) => ({ id, ...data })));
+        return;
+    }
+    const query = parseQuery(historyQuery, req.query);
+    res.json(historyService.query(query));
 });
 
-router.post('/history/clear', (req: Request, res: Response) => {
+router.delete('/history/:id', (req: Request, res: Response) => {
+    const { id } = parseParams(historyIdParams, req.params);
+    if (!historyService.remove(id)) {
+        res.status(404).json({ error: 'History entry not found', code: 'NOT_FOUND' });
+        return;
+    }
+    res.json({ success: true });
+});
+
+router.post('/history/clear', (_req: Request, res: Response) => {
     historyService.clearAll();
     res.json({ success: true });
 });
 
 router.get('/history/export', (req: Request, res: Response) => {
-    const format = req.query.format as string;
+    const format = req.query.format === 'csv' ? 'csv' : 'json';
     const history = historyService.getSorted();
 
     if (format === 'csv') {
@@ -160,213 +409,221 @@ router.get('/history/export', (req: Request, res: Response) => {
 
         const csvContent = [
             headers.join(','),
-            ...rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
+            ...rows.map((row) => row.map(csvCell).join(','))
         ].join('\n');
 
         res.setHeader('Content-Type', 'text/csv');
         res.setHeader('Content-Disposition', 'attachment; filename=qbz_history.csv');
-        return res.send(csvContent);
+        res.send(csvContent);
+        return;
     }
 
-    // Default to JSON
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', 'attachment; filename=qbz_history.json');
     res.json(history);
 });
 
-router.delete('/history', (req: Request, res: Response) => {
+router.delete('/history', (_req: Request, res: Response) => {
     historyService.clearAll();
     res.json({ success: true });
 });
 
-router.get('/preview/:id', async (req: Request, res: Response) => {
-    try {
-        const { audioPreviewService } = await import('../../audio-preview/index.js');
-        const id = getParam(req.params.id);
-        const info = await audioPreviewService.getPreviewInfo(id);
-        
-        if (info) {
-            res.json(info);
-        } else {
-            res.status(404).json({ error: 'Preview info not found' });
-        }
-    } catch (error: unknown) {
-        res.status(500).json({ error: (error as Error).message });
-    }
-});
+/* ------------------------------------------------------------------ */
+/* Lyrics                                                               */
+/* ------------------------------------------------------------------ */
 
 router.get('/lyrics/:id', async (req: Request, res: Response) => {
-    try {
-        const { downloadService } = await import('../../queue-processor.js');
-        const id = getParam(req.params.id);
+    const { id } = parseParams(trackIdParams, req.params);
+    const { downloadService } = await import('../../queue-processor.js');
 
-        const historyItem = historyService.get(id);
-        if (historyItem) {
-            const { existsSync, readFileSync } = await import('fs');
-            const lrcPath = historyItem.filename.replace(/\.[^.]+$/, '.lrc');
-
-            if (existsSync(lrcPath)) {
-                const content = readFileSync(lrcPath, 'utf8');
-                res.json({
-                    success: true,
-                    source: 'Local File',
-                    syncedLyrics: content,
-                    parsedLyrics: downloadService.lyricsProvider.parseLrc(content)
-                });
-                return;
-            }
-        }
-
-        const trackRes = await api.getTrack(id);
-        if (!trackRes.success || !trackRes.data) {
-            res.status(404).json({ error: 'Track not found' });
-            return;
-        }
-
-        const track = trackRes.data;
-        const lyrics = await downloadService.lyricsProvider.getLyrics(
-            track.title,
-            track.performer?.name || track.artist?.name || 'Unknown',
-            track.album?.title,
-            track.duration
-        );
-
-        res.json(lyrics);
-    } catch (error: unknown) {
-        res.status(500).json({ error: (error as Error).message });
+    const historyItem = historyService.get(id);
+    const lrcPath = historyItem ? managedLrcPath(historyItem.filename) : null;
+    if (lrcPath && existsSync(lrcPath)) {
+        const content = readFileSync(lrcPath, 'utf8');
+        res.json({
+            success: true,
+            source: 'Local File',
+            syncedLyrics: content,
+            parsedLyrics: downloadService.lyricsProvider.parseLrc(content)
+        });
+        return;
     }
+
+    const trackRes = await api.getTrack(id);
+    if (!trackRes.success || !trackRes.data) {
+        res.status(404).json({ error: 'Track not found', code: 'NOT_FOUND' });
+        return;
+    }
+
+    const track = trackRes.data;
+    const lyrics = await downloadService.lyricsProvider.getLyrics(
+        track.title,
+        track.performer?.name || track.artist?.name || 'Unknown',
+        track.album?.title,
+        track.duration
+    );
+
+    res.json(lyrics);
 });
 
-router.post('/lyrics/:id/save', async (req: Request, res: Response) => {
-    try {
-        const id = getParam(req.params.id);
-        const { content } = req.body;
-        if (!content) return res.status(400).json({ error: 'No content provided' });
+router.post('/lyrics/:id/save', (req: Request, res: Response) => {
+    const { id } = parseParams(trackIdParams, req.params);
+    const { content } = parseBody(lyricsSaveBody, req.body);
 
-        const historyItem = historyService.get(id);
-        if (!historyItem) return res.status(404).json({ error: 'Track not found in history' });
-
-        const { writeFileSync } = await import('fs');
-        const lrcPath = historyItem.filename.replace(/\.[^.]+$/, '.lrc');
-
-        writeFileSync(lrcPath, content, 'utf8');
-        logger.info(`Lyrics manually updated for track ${id}`, 'LYRICS');
-        res.json({ success: true });
-    } catch (error: unknown) {
-        res.status(500).json({ error: (error as Error).message });
+    const historyItem = historyService.get(id);
+    if (!historyItem) {
+        res.status(404).json({ error: 'Track not found in history', code: 'NOT_FOUND' });
+        return;
     }
+
+    const lrcPath = managedLrcPath(historyItem.filename);
+    if (!lrcPath) {
+        res.status(403).json({
+            error: 'The track is outside the managed library folders',
+            code: 'FORBIDDEN'
+        });
+        return;
+    }
+    if (!existsSync(path.dirname(lrcPath))) {
+        res.status(404).json({ error: 'The track folder no longer exists', code: 'NOT_FOUND' });
+        return;
+    }
+
+    writeFileSync(lrcPath, content, 'utf8');
+    logger.info(`Lyrics manually updated for track ${id}`, 'LYRICS');
+    res.json({ success: true });
 });
 
 router.post('/lyrics/download', async (req: Request, res: Response) => {
-    try {
-        const { trackId } = req.body;
-        if (!trackId) return res.status(400).json({ error: 'trackId is required' });
+    const { trackId: rawTrackId } = parseBody(lyricsDownloadBody, req.body);
+    const trackId = String(rawTrackId);
 
-        const { downloadService } = await import('../../queue-processor.js');
-        const trackRes = await api.getTrack(trackId);
-        if (!trackRes.success || !trackRes.data) return res.status(404).json({ error: 'Track not found' });
-
-        const track = trackRes.data;
-        const lyrics = await downloadService.lyricsProvider.getLyrics(
-            track.title,
-            track.performer?.name || track.artist?.name || 'Unknown',
-            track.album?.title,
-            track.duration
-        );
-
-        if (lyrics.success) {
-            const historyItem = historyService.get(trackId);
-            if (historyItem && (lyrics.syncedLyrics || lyrics.plainLyrics)) {
-                const { writeFileSync } = await import('fs');
-                const lrcPath = historyItem.filename.replace(/\.[^.]+$/, '.lrc');
-                writeFileSync(lrcPath, lyrics.syncedLyrics || lyrics.plainLyrics || '', 'utf8');
-            }
-            res.json(lyrics);
-        } else {
-            res.status(404).json({ error: 'Lyrics not found' });
-        }
-    } catch (error: unknown) {
-        res.status(500).json({ error: (error as Error).message });
+    const { downloadService } = await import('../../queue-processor.js');
+    const trackRes = await api.getTrack(trackId);
+    if (!trackRes.success || !trackRes.data) {
+        res.status(404).json({ error: 'Track not found', code: 'NOT_FOUND' });
+        return;
     }
+
+    const track = trackRes.data;
+    const lyrics = await downloadService.lyricsProvider.getLyrics(
+        track.title,
+        track.performer?.name || track.artist?.name || 'Unknown',
+        track.album?.title,
+        track.duration
+    );
+
+    if (!lyrics.success) {
+        res.status(404).json({ error: 'Lyrics not found', code: 'NOT_FOUND' });
+        return;
+    }
+
+    const historyItem = historyService.get(trackId);
+    const text = lyrics.syncedLyrics || lyrics.plainLyrics;
+    const lrcPath = historyItem ? managedLrcPath(historyItem.filename) : null;
+    if (lrcPath && typeof text === 'string' && text && existsSync(path.dirname(lrcPath))) {
+        writeFileSync(lrcPath, text, 'utf8');
+    }
+    res.json(lyrics);
 });
 
 router.post('/lyrics/download-album-zip', async (req: Request, res: Response) => {
-    try {
-        const { albumId } = req.body;
-        if (!albumId) return res.status(400).json({ error: 'albumId is required' });
+    const { albumId: rawAlbumId } = parseBody(albumZipBody, req.body);
+    const albumId = String(rawAlbumId);
 
-        const albumRes = await api.getAlbum(albumId);
-        if (!albumRes.success || !albumRes.data) return res.status(404).json({ error: 'Album not found' });
-
-        const album = albumRes.data;
-        const tracks = album.tracks?.items || [];
-        if (tracks.length === 0) return res.status(404).json({ error: 'No tracks found for this album' });
-
-        const { downloadService } = await import('../../queue-processor.js');
-        const { existsSync, mkdirSync, createWriteStream } = await import('fs');
-        const { default: archiver } = await import('archiver');
-        const path = await import('path');
-
-        const zipDir = path.join(CONFIG.download.outputDir || './downloads', '_lyrics');
-        if (!existsSync(zipDir)) mkdirSync(zipDir, { recursive: true });
-
-        const zipName = `${album.artist.name} - ${album.title} - Lyrics.zip`.replace(/[\\/:*?"<>|]/g, '_');
-        const zipPath = path.join(zipDir, zipName);
-
-        const output = createWriteStream(zipPath);
-        const archive = archiver('zip', { zlib: { level: 9 } });
-
-        output.on('close', () => {
-            logger.info(`Lyrics ZIP created: ${zipName}`, 'LYRICS');
-        });
-
-        archive.pipe(output);
-
-        for (const track of tracks) {
-            try {
-                const lyrics = await downloadService.lyricsProvider.getLyrics(
-                    track.title,
-                    track.performer?.name || track.artist?.name || album.artist.name,
-                    album.title,
-                    track.duration
-                );
-
-                if (lyrics.success && (lyrics.syncedLyrics || lyrics.plainLyrics)) {
-                    const content = lyrics.syncedLyrics || lyrics.plainLyrics || '';
-                    const filename = `${track.track_number.toString().padStart(2, '0')}. ${track.title}.lrc`.replace(/[\\/:*?"<>|]/g, '_');
-                    archive.append(content, { name: filename });
-                }
-            } catch {
-                logger.warn(`Failed to fetch lyrics for ZIP: ${track.title}`, 'LYRICS');
-            }
-        }
-
-        await archive.finalize();
-        res.json({ success: true, filePath: zipPath });
-    } catch (error: unknown) {
-        res.status(500).json({ error: (error as Error).message });
+    const albumRes = await api.getAlbum(albumId);
+    if (!albumRes.success || !albumRes.data) {
+        res.status(404).json({ error: 'Album not found', code: 'NOT_FOUND' });
+        return;
     }
+
+    const album = albumRes.data;
+    const tracks = album.tracks?.items || [];
+    if (tracks.length === 0) {
+        res.status(404).json({ error: 'No tracks found for this album', code: 'NOT_FOUND' });
+        return;
+    }
+
+    const { downloadService } = await import('../../queue-processor.js');
+    const { default: archiver } = await import('archiver');
+
+    const albumArtist = album.artist?.name || 'Unknown Artist';
+    const zipDir = path.join(path.resolve(CONFIG.download.outputDir || './downloads'), '_lyrics');
+    if (!existsSync(zipDir)) mkdirSync(zipDir, { recursive: true });
+
+    const zipName = `${safeArchiveName(`${albumArtist} - ${album.title || albumId} - Lyrics`)}.zip`;
+    const zipPath = path.join(zipDir, zipName);
+
+    const output = createWriteStream(zipPath);
+    const archive = archiver('zip', { zlib: { level: 9 } });
+    const closed = new Promise<void>((resolve, reject) => {
+        output.on('close', () => resolve());
+        output.on('error', reject);
+        archive.on('error', reject);
+    });
+    archive.pipe(output);
+
+    let added = 0;
+    for (const [index, track] of tracks.entries()) {
+        try {
+            const lyrics = await downloadService.lyricsProvider.getLyrics(
+                track.title,
+                track.performer?.name || track.artist?.name || albumArtist,
+                album.title,
+                track.duration
+            );
+
+            const text = lyrics.success ? lyrics.syncedLyrics || lyrics.plainLyrics : undefined;
+            if (typeof text === 'string' && text) {
+                const number = Number.isInteger(track.track_number) ? track.track_number : index + 1;
+                const filename = `${safeArchiveName(`${String(number).padStart(2, '0')}. ${track.title || 'Track'}`)}.lrc`;
+                archive.append(text, { name: filename });
+                added++;
+            }
+        } catch {
+            logger.warn(`Failed to fetch lyrics for ZIP: ${track.title}`, 'LYRICS');
+        }
+    }
+
+    await archive.finalize();
+    await closed;
+    logger.info(`Lyrics ZIP created: ${zipName} (${added} file(s))`, 'LYRICS');
+
+    // Relative to the downloads folder: the absolute server path is not the
+    // client's business.
+    res.json({
+        success: true,
+        fileName: zipName,
+        filePath: path.posix.join('_lyrics', zipName),
+        lyricsCount: added
+    });
 });
+
+/* ------------------------------------------------------------------ */
+/* Misc                                                                 */
+/* ------------------------------------------------------------------ */
 
 router.post('/migrate/spotify', async (req: Request, res: Response) => {
     try {
-        const { url, quality, download } = req.body;
+        const { url, quality, download } = req.body ?? {};
         const q = normalizeDownloadQuality(quality, CONFIG.quality.default);
         const results = await migrationService.migrateFromSpotify(url, q);
-        
+
         if (download && results.results.length > 0) {
             const count = await migrationService.startMigrationDownload(results.results, q);
             return res.json({ ...results, enqueued: count });
         }
-        
+
         res.json(results);
     } catch (error: unknown) {
         res.status(500).json({ error: (error as Error).message });
     }
 });
 
-router.get('/analytics/overview', (req: Request, res: Response) => {
+router.get('/analytics/overview', (_req: Request, res: Response) => {
     res.json(databaseService.getOverallStats() || {});
 });
+
+router.use(routeErrorHandler('download'));
 
 export default router;

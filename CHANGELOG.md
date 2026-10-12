@@ -4,6 +4,43 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Qobuz library API layer** (groundwork for favorites, your own playlists, purchases and
+  discovery in the dashboard and over MCP). `qobuzLibraryService` (`src/services/qobuz-library/`)
+  lists, checks, adds and removes favorites; lists, creates, updates and deletes your playlists and
+  adds or removes their tracks (with owner checks, and private by default); follows playlists; and
+  reads purchases, featured albums and playlists, labels, similar artists and artist releases. Not
+  yet wired to REST, the UI or MCP. Plan and status: `docs/qobuz-library-and-mcp.md`.
+- **Download and queue commands**: generic `POST /api/download` (track/album subset/playlist/
+  artist/label), `POST /api/download/urls`, queue item retry/priority/details, retry all failed,
+  clear pending, `DELETE /api/history/:id` and paged history search. Watched playlists can now be
+  edited and synced on demand.
+- MCP SDK v2 dependencies for the upcoming `/mcp` endpoint and the `qbz-mcp` stdio bridge.
+
+### Fixed
+
+- **Arbitrary file deletion through the queue API**: `POST /api/queue/add` passed client metadata
+  through, and a completed "upgrade" then deleted `metadata.oldFilePath`. Caller metadata is now
+  dropped, and an upgrade only deletes a file that is inside the library roots, indexed in
+  `library_files`, and not the new file.
+- **Artist downloads did nothing**: they read the wrong response shape, were capped at 50 albums,
+  could deadlock on the concurrency limiter, and ran inside the HTTP request. Artists (and now labels)
+  enqueue one album item per release, across all pages.
+- **Any Qobuz 403 logged you out**: only a 401 now invalidates the token.
+- **Qobuz token in URLs for writes**: writes send it in the form body and the `X-User-Auth-Token`
+  header. The quality fallback no longer fires five requests on authentication or signature errors.
+- **Cache**: cached Qobuz objects could be mutated by routes, hot entries never expired, and user
+  data was not scoped to the account.
+- **Cancelling a download** raised an error notification and counted toward retries.
+- **Playlist watcher** re-queued permanently failed tracks on every interval, and a non-numeric
+  interval synced on every pass.
+- **Batch import** turned Spotify links into bogus queue items, and could stall or finalize early.
+- **Qobuz URL validation** accepted look-alike hosts such as `qobuz.com.evil.tld`.
+- **History**: per-item delete in the History view always failed (route missing).
+- `npm run lint` now lints all of `src/`; on Linux and macOS the unquoted glob skipped 27 files.
+- `docker-compose.yml` example used `FOLDER_STRUCTURE`, which is not read; it is `FOLDER_TEMPLATE`.
+
 ### Changed
 
 - **Distribution is source-only.** No installers, portable builds, or container images

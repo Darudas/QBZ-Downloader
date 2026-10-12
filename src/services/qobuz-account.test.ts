@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { QobuzAccountService } from './QobuzAccountService.js';
 import { settingsService } from './settings.js';
 import { tokenManager } from '../utils/token.js';
+import { clearUserScopedCache } from '../utils/cache.js';
 
 const store = vi.hoisted(() => new Map<string, string>());
 
@@ -17,6 +18,10 @@ vi.mock('./settings.js', () => ({
             }
         })
     }
+}));
+
+vi.mock('../utils/cache.js', () => ({
+    clearUserScopedCache: vi.fn(() => 0)
 }));
 
 vi.mock('../utils/token.js', () => ({
@@ -87,6 +92,39 @@ describe('QobuzAccountService', () => {
         expect(store.get('QOBUZ_APP_ID')).toBe('app-2');
         expect(store.get('QOBUZ_USER_AUTH_TOKEN')).toBe('token-2');
         expect(tokenManager.clearValidation).toHaveBeenCalled();
+        expect(clearUserScopedCache).toHaveBeenCalled();
+    });
+
+    it('should clear user-scoped Qobuz caches on switch, update and removal of the active account', () => {
+        const first = service.create({
+            name: 'Personal',
+            appId: 'app-1',
+            appSecret: 'secret-1',
+            token: 'token-1',
+            userId: 'user-1'
+        });
+        const second = service.create({
+            name: 'Family',
+            appId: 'app-2',
+            appSecret: 'secret-2',
+            token: 'token-2',
+            userId: 'user-2'
+        });
+        vi.mocked(clearUserScopedCache).mockClear();
+
+        service.switchTo(second.id);
+        expect(clearUserScopedCache).toHaveBeenCalledTimes(1);
+
+        service.update(second.id, { token: 'token-3' });
+        expect(clearUserScopedCache).toHaveBeenCalledTimes(2);
+
+        // Updating an inactive account does not touch the active session.
+        service.update(first.id, { name: 'Renamed' });
+        expect(clearUserScopedCache).toHaveBeenCalledTimes(2);
+
+        service.remove(second.id);
+        expect(clearUserScopedCache).toHaveBeenCalledTimes(3);
+        expect(store.get('QOBUZ_USER_AUTH_TOKEN')).toBe('');
     });
 
     it('should update the active credentials when the active account changes', () => {

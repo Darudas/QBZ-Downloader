@@ -11,7 +11,7 @@ export interface HistoryEntry {
     albumArtist?: string;
     artistImageUrl?: string;
     album?: string;
-    type?: 'track' | 'album' | 'playlist' | 'artist';
+    type?: 'track' | 'album' | 'playlist' | 'artist' | 'label';
     qualityScan?: {
         isTrueLossless: boolean;
         confidence: number;
@@ -20,6 +20,76 @@ export interface HistoryEntry {
 }
 
 const DEFAULT_HISTORY_PATH = './data/history.json';
+
+export const HISTORY_DEFAULT_LIMIT = 50;
+export const HISTORY_MAX_LIMIT = 500;
+const MAX_QUERY_LENGTH = 200;
+
+export interface HistoryQuery {
+    /** Case-insensitive substring matched against title, artist, album artist and album. */
+    q?: string;
+    limit?: number;
+    offset?: number;
+}
+
+export type HistoryListEntry = { id: string } & HistoryEntry;
+
+export interface HistoryPage {
+    items: HistoryListEntry[];
+    total: number;
+    offset: number;
+    limit: number;
+    has_more: boolean;
+}
+
+interface HistoryRow {
+    id: string;
+    downloaded_at: string | null;
+    filename: string | null;
+    quality: number | null;
+    title: string | null;
+    artist: string | null;
+    album_artist: string | null;
+    artist_image_url: string | null;
+    album: string | null;
+    type: string | null;
+    quality_scan: string | null;
+}
+
+const escapeLike = (value: string): string => value.replace(/[\\%_]/g, (c) => `\\${c}`);
+
+const clampInt = (value: unknown, fallback: number, min: number, max: number): number => {
+    const parsed = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, Math.trunc(parsed)));
+};
+
+function parseQualityScan(raw: string | null): HistoryEntry['qualityScan'] {
+    if (!raw) return undefined;
+    try {
+        return JSON.parse(raw) as HistoryEntry['qualityScan'];
+    } catch {
+        return undefined;
+    }
+}
+
+function toListEntry(row: HistoryRow): HistoryListEntry {
+    const entry: HistoryListEntry = {
+        id: row.id,
+        downloadedAt: row.downloaded_at ?? '',
+        filename: row.filename ?? '',
+        quality: row.quality ?? 0,
+        title: row.title ?? ''
+    };
+    if (row.artist) entry.artist = row.artist;
+    if (row.album_artist) entry.albumArtist = row.album_artist;
+    if (row.artist_image_url) entry.artistImageUrl = row.artist_image_url;
+    if (row.album) entry.album = row.album;
+    if (row.type) entry.type = row.type as HistoryEntry['type'];
+    const qualityScan = parseQualityScan(row.quality_scan);
+    if (qualityScan) entry.qualityScan = qualityScan;
+    return entry;
+}
 
 export class HistoryService {
     private jsonPath: string;
@@ -38,7 +108,7 @@ export class HistoryService {
                 if (data.entries && Object.keys(data.entries).length > 0) {
                     logger.info(`History: Migrating ${Object.keys(data.entries).length} entries to SQLite...`, 'HISTORY');
                     for (const [id, entry] of Object.entries(data.entries)) {
-                        databaseService.addHistoryEntry(id, entry as any);
+                        databaseService.addHistoryEntry(id, entry as Parameters<typeof databaseService.addHistoryEntry>[1]);
                     }
                     
                     // Backup and remove JSON
@@ -66,7 +136,46 @@ export class HistoryService {
     }
 
     getSorted(limit?: number): Array<{ id: string } & HistoryEntry> {
-        return databaseService.getHistorySorted(limit) as unknown as Array<{ id: string } & HistoryEntry>;
+        // getHistorySorted interpolates the limit into the SQL text, so only a
+        // positive integer may reach it.
+        const safeLimit =
+            typeof limit === 'number' && Number.isInteger(limit) && limit > 0 ? limit : undefined;
+        return databaseService.getHistorySorted(safeLimit) as unknown as Array<{ id: string } & HistoryEntry>;
+    }
+
+    /**
+     * Newest-first page of history entries, optionally filtered by `q`.
+     * `limit` is clamped to 1..{@link HISTORY_MAX_LIMIT} (default
+     * {@link HISTORY_DEFAULT_LIMIT}) and `offset` to >= 0.
+     */
+    query(query: HistoryQuery = {}): HistoryPage {
+        const limit = clampInt(query.limit, HISTORY_DEFAULT_LIMIT, 1, HISTORY_MAX_LIMIT);
+        const offset = clampInt(query.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+        const q = typeof query.q === 'string' ? query.q.trim().slice(0, MAX_QUERY_LENGTH) : '';
+
+        const where = q
+            ? "WHERE title LIKE ? ESCAPE '\\' OR artist LIKE ? ESCAPE '\\' OR album_artist LIKE ? ESCAPE '\\' OR album LIKE ? ESCAPE '\\'"
+            : '';
+        const params = q ? Array(4).fill(`%${escapeLike(q)}%`) : [];
+
+        const db = databaseService.getDb();
+        const totalRow = db
+            .prepare(`SELECT COUNT(*) AS count FROM history ${where}`)
+            .get(...params) as { count: number } | undefined;
+        const rows = db
+            .prepare(
+                `SELECT * FROM history ${where} ORDER BY downloaded_at DESC, id ASC LIMIT ? OFFSET ?`
+            )
+            .all(...params, limit, offset) as HistoryRow[];
+
+        const total = totalRow?.count ?? 0;
+        return {
+            items: rows.map(toListEntry),
+            total,
+            offset,
+            limit,
+            has_more: offset + rows.length < total
+        };
     }
 
     add(trackId: string | number, entry: Omit<HistoryEntry, 'downloadedAt'>): void {

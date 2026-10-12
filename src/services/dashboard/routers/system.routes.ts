@@ -4,7 +4,7 @@ import { CONFIG } from '../../../config.js';
 import { APP_VERSION } from '../../../constants.js';
 import { settingsService } from '../../settings.js';
 import { tokenManager } from '../../../utils/token.js';
-import { AuthenticationError, APIError } from '../../../utils/errors.js';
+import { AuthenticationError, APIError, ForbiddenError } from '../../../utils/errors.js';
 import qobuzApi from '../../../api/qobuz.js';
 import { databaseService } from '../../database/index.js';
 import { historyService } from '../../history.js';
@@ -413,7 +413,8 @@ router.post('/login', async (req: Request, res: Response) => {
         }
     } catch (error: unknown) {
         tokenManager.markInvalid();
-        if (error instanceof AuthenticationError) {
+        // Qobuz answers user/get with 401 (bad token) or 403 (token/user mismatch).
+        if (error instanceof AuthenticationError || error instanceof ForbiddenError) {
             res.status(401).json({ error: 'Account not found or invalid credentials' });
         } else if (error instanceof APIError) {
             res.status(error.statusCode || 500).json({ error: error.message });

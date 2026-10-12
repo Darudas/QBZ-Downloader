@@ -1,4 +1,94 @@
 import { logger } from './logger.js';
+import {
+    QOBUZ_ALBUM_ID_PATTERN,
+    QOBUZ_DOMAIN,
+    QOBUZ_LOCALE_SEGMENT_PATTERN,
+    QOBUZ_NUMERIC_ID_PATTERN,
+    QOBUZ_URL_SEGMENT_TYPES,
+    type QobuzUrlType
+} from '../constants.js';
+
+export type { QobuzUrlType } from '../constants.js';
+
+export interface ParsedQobuzUrl {
+    type: QobuzUrlType;
+    /** Album ids are alphanumeric; every other id is a string of digits. */
+    id: string;
+}
+
+const MAX_PARSE_URL_LENGTH = 2048;
+
+function toUrl(input: string): URL | null {
+    const trimmed = input.trim();
+    if (!trimmed || trimmed.length > MAX_PARSE_URL_LENGTH) return null;
+    const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    try {
+        return new URL(candidate);
+    } catch {
+        return null;
+    }
+}
+
+function hostMatches(hostname: string, domain: string): boolean {
+    const host = hostname.toLowerCase().replace(/\.$/, '');
+    const expected = domain.toLowerCase();
+    return host === expected || host.endsWith(`.${expected}`);
+}
+
+/** True for qobuz.com and its subdomains (exact match, not a substring check). */
+export function isQobuzHost(hostname: string): boolean {
+    return hostMatches(hostname, QOBUZ_DOMAIN);
+}
+
+/**
+ * Parse a Qobuz link into `{type, id}`. Supports
+ * `open.qobuz.com/<type>/<id>`, `play.qobuz.com/<type>/<id>` and store links
+ * `www.qobuz.com/<locale>/<type>/<slug...>/<id>` for tracks, albums, artists
+ * (`/artist/` or `/interpreter/`), playlists and labels. Scheme-less input
+ * (`open.qobuz.com/album/...`) is accepted. Returns null for anything else,
+ * including look-alike hosts such as `qobuz.com.evil.example`.
+ */
+export function parseQobuzUrl(url: string): ParsedQobuzUrl | null {
+    if (typeof url !== 'string') return null;
+    const parsed = toUrl(url);
+    if (!parsed) return null;
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+    if (parsed.username || parsed.password) return null;
+    if (!isQobuzHost(parsed.hostname)) return null;
+
+    let segments: string[];
+    try {
+        segments = parsed.pathname
+            .split('/')
+            .filter(Boolean)
+            .map((segment) => decodeURIComponent(segment));
+    } catch {
+        return null;
+    }
+
+    const isKeyword = (segment: string | undefined) =>
+        segment !== undefined && Object.hasOwn(QOBUZ_URL_SEGMENT_TYPES, segment.toLowerCase());
+
+    if (
+        segments.length >= 2 &&
+        QOBUZ_LOCALE_SEGMENT_PATTERN.test(segments[0]!) &&
+        isKeyword(segments[1])
+    ) {
+        segments.shift();
+    }
+
+    const keyword = segments[0];
+    if (!isKeyword(keyword) || segments.length < 2) return null;
+    const type = QOBUZ_URL_SEGMENT_TYPES[keyword!.toLowerCase()]!;
+    const id = segments[segments.length - 1]!;
+
+    if (type === 'album') {
+        return QOBUZ_ALBUM_ID_PATTERN.test(id) ? { type, id } : null;
+    }
+
+    if (!QOBUZ_NUMERIC_ID_PATTERN.test(id) || /^0+$/.test(id)) return null;
+    return { type, id: id.replace(/^0+/, '') };
+}
 
 export interface UrlValidationResult {
     valid: boolean;
@@ -30,16 +120,8 @@ const DEFAULT_CONFIG: ValidatorConfig = {
 export class InputValidator {
     private config: ValidatorConfig;
 
-    private readonly URL_PATTERNS = {
-        album: /(?:qobuz\.com\/(?:[a-z]{2}-[a-z]{2}\/)?album\/|\/album\/)(?:[^/]+\/)?([a-zA-Z0-9]+)/i,
-        track: /(?:qobuz\.com\/(?:[a-z]{2}-[a-z]{2}\/)?track\/|\/track\/)(?:[^/]+\/)?([a-zA-Z0-9]+)/i,
-        playlist:
-            /(?:qobuz\.com\/(?:[a-z]{2}-[a-z]{2}\/)?playlist\/|\/playlist\/)(?:[^/]+\/)?([a-zA-Z0-9]+)/i,
-        artist: /(?:qobuz\.com\/(?:[a-z]{2}-[a-z]{2}\/)?(?:interpreter|artist)\/|\/(?:interpreter|artist)\/)(?:[^/]+\/)?([a-zA-Z0-9]+)/i,
-        spotify_album: /spotify\.com\/album\/([a-zA-Z0-9]+)/i,
-        spotify_track: /spotify\.com\/track\/([a-zA-Z0-9]+)/i,
-        spotify_playlist: /spotify\.com\/playlist\/([a-zA-Z0-9]+)/i
-    };
+    private readonly SPOTIFY_PATH_PATTERN =
+        /^\/(?:intl-[a-z]{2}(?:-[a-z]{2})?\/)?(album|track|playlist)\/([a-zA-Z0-9]+)\/?$/i;
 
     private readonly DANGEROUS_PATTERNS = [
         /<script/i,
@@ -75,45 +157,51 @@ export class InputValidator {
             }
         }
 
-        const isQobuz = url.includes('qobuz.com');
-        const isSpotify = url.includes('spotify.com');
+        const mentionsSupportedSite = url.includes('qobuz.com') || url.includes('spotify.com');
+        const parsedUrl = toUrl(url);
+        if (!parsedUrl) {
+            return {
+                valid: false,
+                error: mentionsSupportedSite ? 'Invalid URL format' : 'Not a supported URL (Qobuz/Spotify)'
+            };
+        }
+
+        if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
+            return { valid: false, error: 'Invalid protocol' };
+        }
+
+        const host = parsedUrl.hostname.toLowerCase();
+        const isQobuz = isQobuzHost(host);
+        const isSpotify = hostMatches(host, 'spotify.com');
 
         if (!isQobuz && !isSpotify) {
-            return { valid: false, error: 'Not a supported URL (Qobuz/Spotify)' };
+            return {
+                valid: false,
+                error: mentionsSupportedSite ? 'Invalid domain' : 'Not a supported URL (Qobuz/Spotify)'
+            };
         }
 
-        try {
-            const parsedUrl = new URL(url);
-
-            if (this.config.strictMode) {
-                const host = parsedUrl.hostname.toLowerCase();
-                const allowedHosts = [...this.config.allowedHosts, 'open.spotify.com', 'spotify.com'];
-                if (!allowedHosts.some((h) => host.includes(h))) {
-                    return { valid: false, error: 'Invalid domain' };
-                }
-            }
-
-            if (parsedUrl.protocol !== 'https:' && parsedUrl.protocol !== 'http:') {
-                return { valid: false, error: 'Invalid protocol' };
-            }
-        } catch {
-            // Some URLs might not parse if they are relative, but we handle them with patterns
-        }
-
-        for (const [type, pattern] of Object.entries(this.URL_PATTERNS)) {
-            const match = url.match(pattern);
-            if (match) {
-                const id = match[1]!;
-
-                if (!this.isValidId(id)) {
-                    return { valid: false, error: 'Invalid ID format' };
-                }
-
-                return { valid: true, type, id };
+        if (this.config.strictMode) {
+            const allowedHosts = [...this.config.allowedHosts, 'open.spotify.com', 'spotify.com'];
+            if (!allowedHosts.some((allowed) => hostMatches(host, allowed))) {
+                return { valid: false, error: 'Invalid domain' };
             }
         }
 
-        return { valid: false, error: 'Could not parse URL' };
+        if (isQobuz) {
+            const parsed = parseQobuzUrl(url);
+            if (!parsed) return { valid: false, error: 'Could not parse URL' };
+            return { valid: true, type: parsed.type, id: parsed.id };
+        }
+
+        const spotifyMatch = parsedUrl.pathname.match(this.SPOTIFY_PATH_PATTERN);
+        if (!spotifyMatch) return { valid: false, error: 'Could not parse URL' };
+
+        const id = spotifyMatch[2]!;
+        if (!this.isValidId(id)) {
+            return { valid: false, error: 'Invalid ID format' };
+        }
+        return { valid: true, type: `spotify_${spotifyMatch[1]!.toLowerCase()}`, id };
     }
 
     validateQuery(query: string): QueryValidationResult {

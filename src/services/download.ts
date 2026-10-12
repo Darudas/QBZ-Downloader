@@ -28,7 +28,6 @@ interface DownloadOptions {
     isCancelled?: () => boolean;
     onMetadata?: (metadata: Metadata) => void;
     onQuality?: (quality: number) => void;
-    trackIndices?: number[];
     skipExisting?: boolean;
     upgradeSourcePath?: string;
     album?: Album;
@@ -50,7 +49,6 @@ export interface BatchProgressCallback {
 }
 
 export interface AlbumDownloadOptions {
-    trackIndices?: number[];
     onProgress?: BatchProgressCallback;
     onAlbumInfo?: (album: Album) => void;
     batch?: boolean;
@@ -76,7 +74,15 @@ interface DownloadResult {
     name?: string;
     lyrics?: LyricsResult | null;
     skipped?: boolean;
+    /** The caller's isCancelled() returned true before the download finished. */
+    cancelled?: boolean;
 }
+
+const CANCELLED_RESULT: DownloadResult = Object.freeze({
+    success: false,
+    cancelled: true,
+    error: 'Cancelled by user'
+});
 
 export default class DownloadService {
     api: QobuzAPI;
@@ -247,6 +253,10 @@ export default class DownloadService {
         options: DownloadOptions = {}
     ): Promise<DownloadResult> {
         const requestedQuality = normalizeDownloadQuality(quality, CONFIG.quality.default);
+        // Album and playlist tracks wait in the limiter; a track whose item was
+        // cancelled meanwhile must not spend API calls before noticing.
+        const isCancelled = () => options.isCancelled?.() === true;
+        if (isCancelled()) return { ...CANCELLED_RESULT };
         logger.debug(`Download track ${trackId} (Quality: ${requestedQuality}, Lyrics: ${CONFIG.metadata.downloadLyrics}, Embed: ${CONFIG.metadata.embedLyrics})`, 'DOWNLOAD');
         
         let trackInfo;
@@ -288,6 +298,8 @@ export default class DownloadService {
                 logger.warn(`Failed to fetch full album info: ${(e as Error).message}`, 'DOWNLOAD');
             }
         }
+
+        if (isCancelled()) return { ...CANCELLED_RESULT };
 
         let fileUrl;
         try {
@@ -350,6 +362,8 @@ export default class DownloadService {
         if (options.skipExisting && existsSync(filePath)) {
             return { success: true, skipped: true, filePath, quality: actualQuality, metadata };
         }
+
+        if (isCancelled()) return { ...CANCELLED_RESULT };
 
         const sourcePath = options.upgradeSourcePath?.trim();
         const isSamePathUpgrade =
@@ -534,6 +548,7 @@ export default class DownloadService {
                 unlinkSync(workingFilePath);
             }
             resumeService.completeDownload(trackId.toString());
+            if (isCancelled()) return { ...CANCELLED_RESULT };
             return { success: false, error: message };
         }
     }
@@ -677,9 +692,9 @@ export default class DownloadService {
 
         const failedItems = results
             .map((res: DownloadResult, index: number) => ({ res, track: tracks[index] as Track }))
-            .filter((item: { res: DownloadResult; track: Track }) => !item.res.success);
+            .filter((item: { res: DownloadResult; track: Track }) => !item.res.success && !item.res.cancelled);
 
-        if (failedItems.length > 0) {
+        if (failedItems.length > 0 && !options.isCancelled?.()) {
             let albumFolderPath = '';
             const firstSuccess = results.find((r: DownloadResult) => r.success && r.filePath);
             if (firstSuccess && firstSuccess.filePath) {
@@ -760,9 +775,9 @@ export default class DownloadService {
 
         const failedItems = results
             .map((res: DownloadResult, index: number) => ({ res, track: tracks[index] as Track }))
-            .filter((item: { res: DownloadResult; track: Track }) => !item.res.success);
+            .filter((item: { res: DownloadResult; track: Track }) => !item.res.success && !item.res.cancelled);
 
-        if (failedItems.length > 0) {
+        if (failedItems.length > 0 && !options.isCancelled?.()) {
             const foldersMap = new Map<string, { res: DownloadResult; track: Track }[]>();
             for (const item of failedItems) {
                 let folder = '';
@@ -812,44 +827,6 @@ export default class DownloadService {
             completedTracks: completed,
             totalTracks: results.length,
             failedTracks: failedItems.length
-        };
-    }
- 
-    async downloadArtist(artistId: string | number, quality: number | string = 27, options: AlbumDownloadOptions = {}): Promise<DownloadResult> {
-        const requestedQuality = normalizeDownloadQuality(quality, CONFIG.quality.default);
-        const artistInfo = await this.api.getArtist(artistId);
-        if (!artistInfo.success) return { success: false, error: artistInfo.error };
-        const artist = artistInfo.data!;
-
-        if (options.onMetadata) {
-            options.onMetadata({
-                title: artist.name,
-                artist: artist.name,
-                album: 'Discography'
-            });
-        }
-        
-        const albumsRes = await this.api.getArtistAlbums(artistId, 50);
-        if (!albumsRes.success) return { success: false, error: albumsRes.error };
- 
-        const albums = (albumsRes.data as { items?: Album[] })?.items || [];
-        
-        const results = [];
-        for (const album of albums) {
-            const res = await this.concurrencyLimit(() => this.downloadAlbum(album.id, requestedQuality, options));
-            results.push(res);
-        }
- 
-        const completed = results.filter((r) => r.success).length;
-        const totalCompleted = results.reduce((acc, r) => acc + (r.completedTracks || 0), 0);
-        const totalFailed = results.reduce((acc, r) => acc + (r.failedTracks || 0), 0);
-        const totalTracks = results.reduce((acc, r) => acc + (r.totalTracks || 0), 0);
-
-        return {
-            success: completed > 0,
-            completedTracks: totalCompleted,
-            totalTracks: totalTracks,
-            failedTracks: totalFailed
         };
     }
 }

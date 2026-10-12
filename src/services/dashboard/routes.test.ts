@@ -24,6 +24,34 @@ vi.mock('../queue/queue.js', () => {
                 status: 'pending',
                 title: String(opts?.title || 'New Item')
             })),
+            addWithResult: vi.fn(
+                (_type: string, _id: string, _quality: number, opts?: Record<string, unknown>) => ({
+                    item: {
+                        id: 'new-id',
+                        type: _type,
+                        contentId: _id,
+                        quality: _quality,
+                        status: 'pending',
+                        title: String(opts?.title || 'New Item')
+                    },
+                    deduped: false
+                })
+            ),
+            cancelWithResult: vi.fn((id: string) => ({
+                ok: true,
+                item: {
+                    id,
+                    type: 'track',
+                    contentId: '1',
+                    status: 'cancelled',
+                    priority: 'normal',
+                    progress: 0,
+                    quality: 27,
+                    retryCount: 0,
+                    maxRetries: 3
+                }
+            })),
+            getPosition: vi.fn().mockReturnValue(-1),
             getAll: () => [
                 { id: '1', type: 'track', status: 'pending', title: 'Test Track' },
                 { id: '2', type: 'album', status: 'downloading', title: 'Test Album' }
@@ -432,6 +460,7 @@ describe('Dashboard API Routes', () => {
             expect(res.status).toBe(400);
             expect(res.body.error).toContain('Missing required credentials');
             expect(downloadQueue.add).not.toHaveBeenCalled();
+            expect(downloadQueue.addWithResult).not.toHaveBeenCalled();
         });
 
         it('should return error for invalid payload', async () => {

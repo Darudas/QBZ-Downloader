@@ -56,7 +56,14 @@ vi.mock('archiver', () => {
 vi.mock('./queue/queue.js', async () => {
     const { EventEmitter } = await import('events');
     const emitter = new EventEmitter();
-    (emitter as unknown as { add: unknown }).add = vi.fn();
+    const add = vi.fn((type: string, id: string) => ({ id: `q_${type}_${id}`, type, contentId: id }));
+    (emitter as unknown as { add: unknown }).add = add;
+    (emitter as unknown as { addWithResult: unknown }).addWithResult = vi.fn(
+        (type: string, id: string, quality: number, options: unknown) => ({
+            item: add(type, id, quality, options),
+            deduped: false
+        })
+    );
     return {
         downloadQueue: emitter
     };
@@ -146,24 +153,19 @@ describe('BatchImportService', () => {
 
     it('should handle ZIP creation on batch completion', async () => {
         const batchUrls = ['url1', 'url2'];
-        vi.mocked(inputValidator.validateUrl).mockReturnValue({ valid: true, type: 'track', id: '1' });
-        
-        await service.importUrls(batchUrls, 27, true);
-        
-        // Simulate all items completed
-        downloadQueue.emit('item:completed', { 
-            metadata: { batchId: Array.from((service as unknown as { activeBatches: Map<string, unknown> }).activeBatches.keys())[0] },
-            filePath: 'file.flac'
-        });
-        downloadQueue.emit('item:completed', { 
-            metadata: { batchId: Array.from((service as unknown as { activeBatches: Map<string, unknown> }).activeBatches.keys())[0] },
-            filePath: 'file2.flac'
-        });
+        vi.mocked(inputValidator.validateUrl)
+            .mockReturnValueOnce({ valid: true, type: 'track', id: '1' })
+            .mockReturnValueOnce({ valid: true, type: 'track', id: '2' });
 
-        // FinalizeBatch should have been called
+        await service.importUrls(batchUrls, 27, true);
+
+        // Batches track their queue items by id, so completion events must
+        // carry the ids the queue handed out.
+        downloadQueue.emit('item:completed', { id: 'q_track_1', filePath: 'file.flac' });
+        downloadQueue.emit('item:completed', { id: 'q_track_2', filePath: 'file2.flac' });
+
         await new Promise(r => setTimeout(r, 10));
         expect((service as unknown as { activeBatches: Map<string, unknown> }).activeBatches.size).toBe(0);
-
     });
 
     it('should remove generated batch files and empty folders after ZIP creation', async () => {
