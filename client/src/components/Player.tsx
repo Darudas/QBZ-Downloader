@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { smartFetch } from '../utils/api';
+import { apiJson, smartFetch } from '../utils/api';
 import { Icons } from './Icons';
+import { FavoriteButton } from './FavoriteButton';
 import { LyricsEditor } from './LyricsEditor';
 import { useToast } from '../contexts/ToastContext';
 import { usePlayer } from '../contexts/PlayerContext';
@@ -416,14 +417,10 @@ export const Player: React.FC<PlayerProps> = ({ sidebarCollapsed = false }) => {
     const addToQueue = async () => {
         if (!track) return;
         try {
-            await smartFetch('/api/queue/add', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ type: 'track', id: track.id })
-            });
+            await apiJson('/api/queue/add', { method: 'POST', body: { type: 'track', id: track.id } });
             showToast('Added to queue', 'success');
         } catch (e) {
-            showToast('Failed to add to queue', 'error');
+            showToast(e instanceof Error ? e.message : 'Failed to add to queue', 'error');
         }
     };
 
@@ -662,6 +659,7 @@ export const Player: React.FC<PlayerProps> = ({ sidebarCollapsed = false }) => {
                         <button className="icon-btn" onClick={addToQueue} title="Download">
                             <Icons.Download width={18} height={18} />
                         </button>
+                        {track?.id && <FavoriteButton kind="track" id={track.id} className="icon-btn" size={18} />}
 
 
                         <div className="divider"></div>
