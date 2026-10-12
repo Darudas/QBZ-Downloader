@@ -10,6 +10,7 @@ import { playTrack } from './Player';
 import { Icons } from './Icons';
 import type { OwnPlaylist } from './AddToPlaylistModal';
 import { appendPage } from '../utils/lists';
+import { activationProps } from '../utils/a11y';
 
 interface PageResult<T> {
     items: T[];
@@ -37,6 +38,9 @@ interface PlaylistDetails extends OwnPlaylist {
 }
 
 const PAGE_SIZE = 100;
+/** Mirror PLAYLIST_NAME_MAX / PLAYLIST_DESCRIPTION_MAX in src/services/qobuz-library/constants.ts. */
+const NAME_MAX = 200;
+const DESCRIPTION_MAX = 1000;
 
 const coverOfPlaylist = (playlist: OwnPlaylist) =>
     playlist.images300?.[0] || playlist.image_rectangle?.[0] || '';
@@ -125,8 +129,15 @@ const PlaylistDetail: React.FC<{ playlistId: string; onBack: () => void; onChang
                 body: { playlistTrackIds: [String(track.playlist_track_id)] }
             });
             setTracks((prev) => prev.filter((entry) => entry.playlist_track_id !== track.playlist_track_id));
+            // Both counts shrink, otherwise "Load more" would offer a page that does not exist.
             setDetails((prev) =>
-                prev ? { ...prev, tracks_count: Math.max(0, (prev.tracks_count ?? 1) - 1) } : prev
+                prev
+                    ? {
+                          ...prev,
+                          ...(prev.tracks_count !== undefined ? { tracks_count: Math.max(0, prev.tracks_count - 1) } : {}),
+                          tracks: { ...prev.tracks, total: Math.max(0, prev.tracks.total - 1) }
+                      }
+                    : prev
             );
             onChanged();
             showToast(t('msg_track_removed'), 'success');
@@ -203,8 +214,8 @@ const PlaylistDetail: React.FC<{ playlistId: string; onBack: () => void; onChang
                 <div className="album-header-info">
                     {editing ? (
                         <form onSubmit={saveEdit} className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 480, margin: 0 }}>
-                            <input value={name} onChange={(e) => setName(e.target.value)} maxLength={200} required aria-label={t('label_name')} />
-                            <textarea value={description} onChange={(e) => setDescription(e.target.value)} maxLength={2000} rows={3} aria-label={t('label_description')} style={{ background: 'rgba(0, 0, 0, 0.2)', border: '1px solid var(--border)', borderRadius: 14, padding: '12px 16px', color: 'var(--text-primary)', fontSize: 14, fontFamily: 'inherit', resize: 'vertical' }} />
+                            <input value={name} onChange={(e) => setName(e.target.value)} maxLength={NAME_MAX} required aria-label={t('label_name')} />
+                            <textarea value={description} onChange={(e) => setDescription(e.target.value)} maxLength={DESCRIPTION_MAX} rows={3} aria-label={t('label_description')} style={{ background: 'rgba(0, 0, 0, 0.2)', border: '1px solid var(--border)', borderRadius: 14, padding: '12px 16px', color: 'var(--text-primary)', fontSize: 14, fontFamily: 'inherit', resize: 'vertical' }} />
                             <div style={{ display: 'flex', gap: 8 }}>
                                 <button type="submit" className="btn primary" disabled={busy || !name.trim()}>{t('action_save')}</button>
                                 <button type="button" className="btn secondary" onClick={() => setEditing(false)}>{t('action_cancel')}</button>
@@ -260,13 +271,14 @@ const PlaylistDetail: React.FC<{ playlistId: string; onBack: () => void; onChang
                 {tracks.map((track, index) => {
                     const artistName = track.performer?.name || '';
                     const cover = track.album?.image?.small || track.album?.image?.thumbnail || '';
+                    const albumId = track.album?.id ? String(track.album.id) : '';
                     return (
                         <div key={String(track.playlist_track_id)} className="track-item">
                             <div className="track-number">{track.position ?? index + 1}</div>
                             <div
                                 className="track-title"
-                                style={{ cursor: track.album?.id ? 'pointer' : 'default', minWidth: 0 }}
-                                onClick={() => track.album?.id && navigate('album', { id: String(track.album.id) })}
+                                style={{ cursor: albumId ? 'pointer' : 'default', minWidth: 0 }}
+                                {...(albumId ? activationProps(() => navigate('album', { id: albumId }), track.title) : {})}
                             >
                                 {track.title}
                                 <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
@@ -278,7 +290,7 @@ const PlaylistDetail: React.FC<{ playlistId: string; onBack: () => void; onChang
                                 <button className="btn-track-dl" title={t('action_download')} aria-label={t('action_download')} onClick={() => addToQueue('track', String(track.id))}>
                                     <Icons.Download width={14} height={14} />
                                 </button>
-                                <button className="btn-track-dl" title={t('action_play')} aria-label={t('action_play')} onClick={() => playTrack(String(track.id), track.title, artistName, cover, track.album?.id ? String(track.album.id) : undefined, tracks)}>
+                                <button className="btn-track-dl" title={t('action_play')} aria-label={t('action_play')} onClick={() => playTrack(String(track.id), track.title, artistName, cover, albumId || undefined, tracks)}>
                                     <Icons.Play width={14} height={14} />
                                 </button>
                                 <FavoriteButton kind="track" id={String(track.id)} />
@@ -319,13 +331,20 @@ const PlaylistDetail: React.FC<{ playlistId: string; onBack: () => void; onChang
 export const MyPlaylistsView: React.FC = () => {
     const { t } = useLanguage();
     const { showToast } = useToast();
+    const { navData, navigate, goBack } = useNavigation();
     const [playlists, setPlaylists] = useState<OwnPlaylist[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
-    const [selected, setSelected] = useState<string | null>(null);
     const [creating, setCreating] = useState(false);
     const [newName, setNewName] = useState('');
     const [newPublic, setNewPublic] = useState(false);
+    const [submitting, setSubmitting] = useState(false);
+
+    // The open playlist lives in the URL (`/my_playlists/<id>`), so browser Back
+    // closes it and a reload reopens it.
+    const selected = navData?.id ? String(navData.id) : null;
+    const openPlaylist = (id: string) => navigate('my_playlists', { id });
+    const closePlaylist = () => goBack('my_playlists');
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -347,7 +366,8 @@ export const MyPlaylistsView: React.FC = () => {
     const create = async (event: React.FormEvent) => {
         event.preventDefault();
         const name = newName.trim();
-        if (!name) return;
+        if (!name || submitting) return;
+        setSubmitting(true);
         try {
             const result = await apiJson<{ playlist: OwnPlaylist }>('/api/me/playlists', {
                 method: 'POST',
@@ -360,13 +380,15 @@ export const MyPlaylistsView: React.FC = () => {
             void load();
         } catch (err) {
             showToast(err instanceof Error ? err.message : String(err), 'error');
+        } finally {
+            setSubmitting(false);
         }
     };
 
     if (selected) {
         return (
             <div id="view-my-playlists" className="view-section active">
-                <PlaylistDetail playlistId={selected} onBack={() => setSelected(null)} onChanged={() => void load()} />
+                <PlaylistDetail key={selected} playlistId={selected} onBack={closePlaylist} onChanged={() => void load()} />
             </div>
         );
     }
@@ -379,7 +401,11 @@ export const MyPlaylistsView: React.FC = () => {
             {items.map((playlist) => {
                 const cover = coverOfPlaylist(playlist);
                 return (
-                    <div key={String(playlist.id)} className="grid-item" onClick={() => setSelected(String(playlist.id))}>
+                    <div
+                        key={String(playlist.id)}
+                        className="grid-item"
+                        {...activationProps(() => openPlaylist(String(playlist.id)), playlist.name)}
+                    >
                         <div className="grid-cover-container">
                             {cover ? (
                                 <img src={cover} className="grid-cover" alt="" loading="lazy" />
@@ -422,7 +448,7 @@ export const MyPlaylistsView: React.FC = () => {
                         <input
                             autoFocus
                             value={newName}
-                            maxLength={200}
+                            maxLength={NAME_MAX}
                             onChange={(e) => setNewName(e.target.value)}
                             placeholder={t('placeholder_new_playlist')}
                             aria-label={t('placeholder_new_playlist')}
@@ -432,7 +458,7 @@ export const MyPlaylistsView: React.FC = () => {
                         <input type="checkbox" checked={newPublic} onChange={(e) => setNewPublic(e.target.checked)} />
                         {t('label_public')}
                     </label>
-                    <button type="submit" className="btn primary" disabled={!newName.trim()}>{t('action_create')}</button>
+                    <button type="submit" className="btn primary" disabled={!newName.trim() || submitting}>{t('action_create')}</button>
                 </form>
             )}
 

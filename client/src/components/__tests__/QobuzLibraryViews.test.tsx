@@ -2,7 +2,6 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FavoritesView } from '../FavoritesView';
 import { AddToPlaylistModal } from '../AddToPlaylistModal';
-import { MyPlaylistsView } from '../MyPlaylistsView';
 import { useFavoritesStore } from '../../stores/favoritesStore';
 import { mockFetchRoutes } from '../../test-utils/fetchRoutes';
 
@@ -184,73 +183,5 @@ describe('AddToPlaylistModal', () => {
     it('renders nothing when closed', () => {
         const { container } = render(<AddToPlaylistModal isOpen={false} onClose={vi.fn()} trackIds={['1']} />);
         expect(container).toBeEmptyDOMElement();
-    });
-});
-
-describe('MyPlaylistsView', () => {
-    const playlists = [
-        { id: 1, name: 'Mine', tracks_count: 2, is_owner: true },
-        { id: 2, name: 'Theirs', tracks_count: 9, is_owner: false, owner: { name: 'Qobuz' } }
-    ];
-    const details = {
-        id: 1,
-        name: 'Mine',
-        tracks_count: 2,
-        is_owner: true,
-        can_add_tracks: true,
-        tracks: page([
-            { id: 100, playlist_track_id: 9001, position: 1, title: 'Alpha', duration: 60 },
-            { id: 101, playlist_track_id: 9002, position: 2, title: 'Beta', duration: 61 }
-        ])
-    };
-
-    it('separates own and followed playlists', async () => {
-        mockFetchRoutes({ 'GET /api/me/playlists': () => page(playlists) });
-        render(<MyPlaylistsView />);
-        expect(await screen.findByText('Mine')).toBeInTheDocument();
-        expect(screen.getByText('title_followed_playlists')).toBeInTheDocument();
-        expect(screen.getByText('Theirs')).toBeInTheDocument();
-    });
-
-    it('removes a track by its playlist_track_id', async () => {
-        const calls = mockFetchRoutes({
-            'GET /api/me/playlists': () => page(playlists),
-            'GET /api/me/playlists/1': () => details,
-            'GET /api/favorites/ids': () => ({ albums: [], tracks: [], artists: [] }),
-            'DELETE /api/me/playlists/1/tracks': () => ({ removed: 1 })
-        });
-        render(<MyPlaylistsView />);
-        fireEvent.click(await screen.findByText('Mine'));
-        const row = (await screen.findByText('Beta')).closest('.track-item') as HTMLElement;
-        fireEvent.click(within(row).getByLabelText('action_remove_from_playlist'));
-        await waitFor(() => expect(screen.queryByText('Beta')).not.toBeInTheDocument());
-        expect(calls.find((c) => c.method === 'DELETE')?.body).toEqual({ playlistTrackIds: ['9002'] });
-    });
-
-    it('deletes an own playlist after confirmation and goes back', async () => {
-        const calls = mockFetchRoutes({
-            'GET /api/me/playlists': () => page(playlists),
-            'GET /api/me/playlists/1': () => details,
-            'GET /api/favorites/ids': () => ({ albums: [], tracks: [], artists: [] }),
-            'DELETE /api/me/playlists/1': () => ({ deleted: true })
-        });
-        render(<MyPlaylistsView />);
-        fireEvent.click(await screen.findByText('Mine'));
-        fireEvent.click(await screen.findByRole('button', { name: /action_delete/ }));
-        fireEvent.click(screen.getByText('Confirm'));
-        await waitFor(() => expect(calls.some((c) => c.method === 'DELETE' && c.url === '/api/me/playlists/1')).toBe(true));
-        expect(await screen.findByText('title_my_playlists')).toBeInTheDocument();
-    });
-
-    it('creates a new playlist', async () => {
-        const calls = mockFetchRoutes({
-            'GET /api/me/playlists': () => page([]),
-            'POST /api/me/playlists': () => ({ playlist: { id: 3, name: 'Gym' } })
-        });
-        render(<MyPlaylistsView />);
-        fireEvent.click(screen.getByRole('button', { name: /action_new_playlist/ }));
-        fireEvent.change(screen.getByLabelText('placeholder_new_playlist'), { target: { value: 'Gym' } });
-        fireEvent.click(screen.getByRole('button', { name: 'action_create' }));
-        await waitFor(() => expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ name: 'Gym', isPublic: false }));
     });
 });

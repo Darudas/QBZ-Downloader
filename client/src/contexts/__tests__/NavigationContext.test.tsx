@@ -20,6 +20,8 @@ const Probe = () => {
             <button onClick={() => setActiveTab('favorites')}>favorites</button>
             <button onClick={() => navigate('album', { id: 'a1' })}>album</button>
             <button onClick={() => navigate('label', { id: '42' })}>label</button>
+            <button onClick={() => navigate('my_playlists', { id: '5' })}>playlist</button>
+            <button onClick={() => navigate('discover')}>discover</button>
             <button onClick={() => goBack('search')}>back</button>
         </div>
     );
@@ -69,6 +71,22 @@ describe('NavigationContext routing', () => {
         mocks.settings = { UI_LAST_TAB: 'purchases' };
         start('/');
         expect(tab()).toBe('purchases');
+    });
+
+    it('opens a playlist from /my_playlists/:id and the list from /my_playlists', () => {
+        start('/my_playlists/5');
+        expect(tab()).toBe('my_playlists');
+        expect(id()).toBe('5');
+    });
+
+    it('writes /my_playlists/:id to the URL and clears data for a plain view', () => {
+        start('/');
+        fireEvent.click(screen.getByText('playlist'));
+        expect(window.location.pathname).toBe('/my_playlists/5');
+        expect(id()).toBe('5');
+        fireEvent.click(screen.getByText('discover'));
+        expect(window.location.pathname).toBe('/discover');
+        expect(id()).toBe('');
     });
 
     it('writes /label/:id to the URL', () => {

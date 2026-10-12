@@ -32,6 +32,9 @@ const ALLOWED_ROUTES: string[] = ALLOWED_TABS;
 /** Views addressed by an id, routed as `/<tab>/<id>`. */
 const DETAIL_TABS: Tab[] = ['artist', 'album', 'label'];
 
+/** Top-level views that can also show one of their items: `/my_playlists/123`. */
+const OPTIONAL_ID_TABS: Tab[] = ['my_playlists'];
+
 /** Views that keep `navData` when selected through `setActiveTab`. */
 const DATA_TABS: Tab[] = [...DETAIL_TABS, 'artist_albums', 'artist_tracks'];
 
@@ -61,18 +64,24 @@ const currentEntry = (): Partial<HistoryEntry> => {
     return state && typeof state === 'object' ? state : {};
 };
 
-/** Parses `/album/123`, `/label/9` or `/discover` into a tab and its data. */
+/** Parses `/album/123`, `/label/9`, `/my_playlists/5` or `/discover` into a tab and its data. */
 const parseLocation = (path: string): { tab: Tab; data: NavigationData | null } | null => {
     const [, first = '', second] = path.split('/');
     if (DETAIL_TABS.includes(first as Tab)) {
         return second ? { tab: first as Tab, data: { id: decodeURIComponent(second) } } : null;
     }
     if (first === '') return { tab: 'queue', data: null };
-    return ALLOWED_ROUTES.includes(first) ? { tab: first as Tab, data: null } : null;
+    if (!ALLOWED_ROUTES.includes(first)) return null;
+    if (second && OPTIONAL_ID_TABS.includes(first as Tab)) {
+        return { tab: first as Tab, data: { id: decodeURIComponent(second) } };
+    }
+    return { tab: first as Tab, data: null };
 };
 
 const pathOf = (tab: Tab, data?: NavigationData | null): string => {
-    if (DETAIL_TABS.includes(tab) && data?.id) return `/${tab}/${encodeURIComponent(String(data.id))}`;
+    if ((DETAIL_TABS.includes(tab) || OPTIONAL_ID_TABS.includes(tab)) && data?.id) {
+        return `/${tab}/${encodeURIComponent(String(data.id))}`;
+    }
     if (tab !== 'queue' && ALLOWED_ROUTES.includes(tab)) return `/${tab}`;
     return '/';
 };
@@ -178,7 +187,9 @@ export const NavigationProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     };
 
     const navigate = (tab: Tab, data?: NavigationData) => {
+        // Without data a top-level view opens plain (e.g. the playlist list, not the last playlist).
         if (data) setNavData(data);
+        else if (!DATA_TABS.includes(tab)) setNavData(null);
         setActiveTabStateUnchecked(tab);
         pushEntry(tab, data ?? null);
     };
