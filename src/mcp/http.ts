@@ -1,4 +1,5 @@
 import express, { Router, Request, Response, NextFunction } from 'express';
+import type { AddressInfo, Server, Socket } from 'node:net';
 import { rateLimit } from 'express-rate-limit';
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { toNodeHandler } from '@modelcontextprotocol/node';
@@ -18,6 +19,26 @@ import { logger } from '../utils/logger.js';
 const rpcError = (res: Response, status: number, code: number, message: string): void => {
     res.status(status).json({ jsonrpc: '2.0', error: { code, message }, id: null });
 };
+
+const isLoopbackAddress = (address: string): boolean => {
+    const a = address.toLowerCase();
+    return a === '::1' || a.startsWith('127.') || a.startsWith('::ffff:127.');
+};
+
+/** The port of the listening socket when it is bound to a loopback address, else null. */
+function loopbackBindPort(req: Request): number | null {
+    const server = (req.socket as Socket & { server?: Pick<Server, 'address'> }).server;
+    const address = server?.address?.() as AddressInfo | string | null | undefined;
+    if (!address || typeof address === 'string') return null;
+    return isLoopbackAddress(address.address) ? address.port : null;
+}
+
+/** `localhost`, `127.0.0.1` or `[::1]`, with the bound port (or no port when that is 80). */
+export function isAllowedLoopbackHost(hostHeader: string | undefined, port: number): boolean {
+    const match = /^(localhost|127\.0\.0\.1|\[::1\])(?::(\d{1,5}))?$/i.exec((hostHeader ?? '').trim());
+    if (!match) return false;
+    return (match[2] === undefined ? 80 : Number(match[2])) === port;
+}
 
 /**
  * The public MCP endpoint. Mounted before the global body parser and outside
@@ -40,6 +61,16 @@ export function createMcpEndpoint(): Router {
             handler: (_req, res) => rpcError(res, 429, -32000, 'Too many requests')
         })
     );
+
+    // DNS-rebinding guard: on a loopback bind only loopback Host names are
+    // valid, whatever the dashboard password setting (the dashboard's own
+    // guard is skipped when a password is set and does not check the port).
+    router.use((req: Request, res: Response, next: NextFunction) => {
+        const port = loopbackBindPort(req);
+        if (port === null || isAllowedLoopbackHost(req.headers.host, port)) return next();
+        logger.warn('Rejected MCP request with a non-loopback Host header', 'SECURITY');
+        rpcError(res, 403, -32000, 'Forbidden host');
+    });
 
     router.use((_req: Request, res: Response, next: NextFunction) => {
         if (!isMcpEnabled()) return rpcError(res, 404, -32000, 'MCP is disabled');
