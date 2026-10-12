@@ -19,6 +19,7 @@ import { createMcpEndpoint, createMcpAdminRouter } from '../../mcp/http.js';
 import { isLoopbackHost, setDashboardBoundHost } from './bind-host.js';
 import { getErrorMessage, toSafeErrorPayload } from '../../utils/errors.js';
 import { PasswordGuessLimiter } from './password-guess-limiter.js';
+import { DashboardSessionStore, parseTrustProxy } from './session-store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -32,15 +33,17 @@ export interface DashboardConfig {
 // header, which is why /api/stream and /api/preview used to skip authentication
 // altogether; a cookie closes that gap without changing how the player works.
 const SESSION_COOKIE = 'qbz_session';
+// Random login session (see session-store.ts); lets a logged-in browser keep
+// working while the password guess limiter blocks its address.
+const SESSION_ID_COOKIE = 'qbz_sid';
 
-function readSessionCookie(req: Request): string | undefined {
-    const header = req.headers.cookie;
+function readCookie(header: string | undefined, name: string): string | undefined {
     if (!header) return undefined;
 
     for (const part of header.split(';')) {
         const separator = part.indexOf('=');
         if (separator === -1) continue;
-        if (part.slice(0, separator).trim() !== SESSION_COOKIE) continue;
+        if (part.slice(0, separator).trim() !== name) continue;
 
         try {
             return decodeURIComponent(part.slice(separator + 1).trim());
@@ -50,6 +53,10 @@ function readSessionCookie(req: Request): string | undefined {
     }
 
     return undefined;
+}
+
+function readSessionCookie(req: Request): string | undefined {
+    return readCookie(req.headers.cookie, SESSION_COOKIE);
 }
 
 function sha256Hex(value: string): string {
@@ -87,10 +94,15 @@ export class DashboardService {
     private boundHost: string = CONFIG.dashboard.host || '127.0.0.1';
     /** Wrong dashboard passwords per client, across every protected route. */
     private readonly passwordGuesses = new PasswordGuessLimiter();
+    private readonly sessions = new DashboardSessionStore();
 
     constructor(port: number = CONFIG.dashboard.port || 3000) {
         this.port = port;
         this.app = express();
+        // Behind a reverse proxy every request comes from the proxy's address;
+        // TRUST_PROXY (true, a hop count or addresses) makes req.ip the client.
+        const trustProxy = parseTrustProxy(process.env.TRUST_PROXY);
+        if (trustProxy !== undefined) this.app.set('trust proxy', trustProxy);
         // Express matches routes case-insensitively by default, so `/API/logs`
         // reaches the same router as `/api/logs`. The auth guard below decides
         // what is protected from the same path, and the two must never disagree.
@@ -245,6 +257,7 @@ export class DashboardService {
                     secure: req.secure,
                     path: '/'
                 });
+                this.issueSession(req, res, password);
                 res.json({ success: true });
                 return;
             }
@@ -294,6 +307,10 @@ export class DashboardService {
 
             // Deliberately not accepting the password from the query string: it
             // lands in access logs, Referer headers and browser history.
+            if (this.sessions.isValid(readCookie(req.headers.cookie, SESSION_ID_COOKIE), password)) {
+                return next();
+            }
+
             const providedPassword = req.headers['x-password'] || readSessionCookie(req);
             if (
                 typeof providedPassword === 'string' &&
@@ -308,6 +325,10 @@ export class DashboardService {
                 typeof providedPassword === 'string' &&
                 matchesDashboardPassword(providedPassword, password)
             ) {
+                // Only browsers (which keep the login cookie) get a session;
+                // scripts sending x-password on every call would otherwise
+                // create a session per request and crowd out real ones.
+                if (readSessionCookie(req)) this.issueSession(req, res, password);
                 return next();
             }
 
@@ -330,6 +351,17 @@ export class DashboardService {
             }
 
             return (activeDownloadsStatic as RequestHandler)(req, res, next);
+        });
+    }
+
+    /** Sets a fresh random session cookie unless the request already has a valid one. */
+    private issueSession(req: Request, res: Response, password: string): void {
+        if (this.sessions.isValid(readCookie(req.headers.cookie, SESSION_ID_COOKIE), password)) return;
+        res.cookie(SESSION_ID_COOKIE, this.sessions.create(password), {
+            httpOnly: true,
+            sameSite: 'strict',
+            secure: req.secure,
+            path: '/'
         });
     }
 
@@ -413,14 +445,25 @@ export class DashboardService {
             // Bypass password protection entirely in Desktop mode
             if (!password || isDesktop) return next();
 
-            const providedPassword = socket.handshake.auth?.password;
-            if (
-                typeof providedPassword === 'string' &&
-                matchesDashboardPassword(providedPassword, password)
-            ) {
+            if (this.sessions.isValid(readCookie(socket.handshake.headers.cookie, SESSION_ID_COOKIE), password)) {
                 return next();
             }
 
+            const providedPassword = socket.handshake.auth?.password;
+            if (typeof providedPassword !== 'string' || providedPassword === '') {
+                return next(new Error('Authentication failed'));
+            }
+            // Same guess limit as the HTTP routes, so the socket handshake is
+            // not a side door for unlimited password guessing.
+            const client = socket.handshake.address || 'unknown';
+            if (this.passwordGuesses.isBlocked(client)) {
+                return next(new Error('Too many authentication attempts, please try again later'));
+            }
+            if (matchesDashboardPassword(providedPassword, password)) {
+                return next();
+            }
+
+            this.passwordGuesses.recordFailure(client, providedPassword);
             next(new Error('Authentication failed'));
         });
 

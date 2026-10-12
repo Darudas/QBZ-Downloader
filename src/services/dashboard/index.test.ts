@@ -235,6 +235,55 @@ describe('DashboardService password guard', () => {
         expect(anonymous.status).toBe(401);
     });
 
+    it('keeps a browser that logged in before an attack working while the address is blocked', async () => {
+        CONFIG.dashboard.password = 'hunter2';
+        const service = await startService();
+        const server = getServer(service);
+
+        const login = await request(server).get('/api/auth/verify').set('x-password', 'hunter2');
+        expect(login.status).toBe(200);
+        const cookies = ([] as string[]).concat(login.headers['set-cookie'] ?? []);
+        const sid = cookies.find((c) => c.startsWith('qbz_sid='))?.split(';')[0];
+        expect(sid).toBeDefined();
+
+        // Someone behind the same address (proxy, Docker gateway) guesses.
+        for (let i = 0; i < 20; i++) {
+            await request(server).get('/api/logs').set('x-password', `guess-${i}`);
+        }
+        const attacker = await request(server).get('/api/logs').set('x-password', 'hunter2');
+        expect(attacker.status).toBe(429);
+
+        const browser = await request(server).get('/api/logs').set('Cookie', sid as string);
+        expect(browser.status).toBe(404); // past the guard
+
+        const forged = await request(server).get('/api/logs').set('Cookie', 'qbz_sid=forged-token');
+        expect(forged.status).toBe(401);
+    });
+
+    it('ends sessions when the dashboard password changes', async () => {
+        CONFIG.dashboard.password = 'hunter2';
+        const service = await startService();
+        const server = getServer(service);
+
+        const login = await request(server).get('/api/auth/verify').set('x-password', 'hunter2');
+        const sid = ([] as string[])
+            .concat(login.headers['set-cookie'] ?? [])
+            .find((c) => c.startsWith('qbz_sid='))
+            ?.split(';')[0] as string;
+        expect((await request(server).get('/api/logs').set('Cookie', sid)).status).toBe(404);
+
+        CONFIG.dashboard.password = 'new-password';
+        expect((await request(server).get('/api/logs').set('Cookie', sid)).status).toBe(401);
+    });
+
+    it('does not create sessions for scripts that send x-password without cookies', async () => {
+        CONFIG.dashboard.password = 'hunter2';
+        const service = await startService();
+        const res = await request(getServer(service)).get('/api/logs').set('x-password', 'hunter2');
+        expect(res.status).toBe(404);
+        expect(([] as string[]).concat(res.headers['set-cookie'] ?? []).some((c) => c.startsWith('qbz_sid='))).toBe(false);
+    });
+
     it('does not lock out a tab that keeps sending the same stale password', async () => {
         CONFIG.dashboard.password = 'hunter2';
         const service = await startService();

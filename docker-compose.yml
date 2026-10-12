@@ -15,6 +15,11 @@ services:
       DASHBOARD_PORT: "3000"
       DOWNLOADS_PATH: "/music"
 
+      # Behind a reverse proxy (nginx, Traefik, Caddy) set this so the password
+      # guess limit applies per client instead of to the proxy's address:
+      # "true", a hop count like "1", or the proxy's addresses ("loopback, 172.16.0.0/12").
+      # TRUST_PROXY: "1"
+
       # Any setting key works here; it applies when nothing is stored yet, and
       # anything changed in the dashboard afterwards takes precedence.
       # MAX_CONCURRENCY: "2"
