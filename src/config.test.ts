@@ -143,3 +143,47 @@ describe('CONFIG desktop download-path default (issue #137)', () => {
         expect(CONFIG.download.outputDir).toBe('E:/Explicit');
     });
 });
+
+describe('CONFIG.mcp and CONFIG.favorites', () => {
+    afterEach(() => {
+        process.env = { ...originalEnv };
+        vi.resetModules();
+        vi.doUnmock('./services/settings.js');
+    });
+
+    it('defaults to MCP off with the non-destructive groups and no favorites auto-download', async () => {
+        const { CONFIG } = await loadConfigWithSettings({});
+
+        expect(CONFIG.mcp).toEqual({ enabled: false, permissions: ['library', 'download', 'manage'] });
+        expect(CONFIG.favorites).toEqual({
+            autoDownload: false,
+            types: ['albums', 'tracks'],
+            intervalHours: 6
+        });
+    });
+
+    it('parses stored values and drops unknown list entries', async () => {
+        const { CONFIG } = await loadConfigWithSettings({
+            MCP_ENABLED: 'true',
+            MCP_PERMISSIONS: 'manage, destructive,bogus,manage',
+            FAVORITES_AUTO_DOWNLOAD: 'true',
+            FAVORITES_AUTO_DOWNLOAD_TYPES: 'tracks,artists',
+            FAVORITES_SYNC_INTERVAL_HOURS: '12'
+        });
+
+        expect(CONFIG.mcp).toEqual({ enabled: true, permissions: ['manage', 'destructive'] });
+        expect(CONFIG.favorites).toEqual({ autoDownload: true, types: ['tracks'], intervalHours: 12 });
+    });
+
+    it('clamps the sync interval and treats non-boolean strings as false', async () => {
+        const { CONFIG } = await loadConfigWithSettings({
+            MCP_ENABLED: 'yes',
+            FAVORITES_AUTO_DOWNLOAD: '1',
+            FAVORITES_SYNC_INTERVAL_HOURS: '0'
+        });
+
+        expect(CONFIG.mcp.enabled).toBe(false);
+        expect(CONFIG.favorites.autoDownload).toBe(false);
+        expect(CONFIG.favorites.intervalHours).toBe(1);
+    });
+});

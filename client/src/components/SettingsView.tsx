@@ -377,7 +377,11 @@ export const SettingsView: React.FC = () => {
 
     const handleDoubleConfirm = async () => {
         try {
-            const res = await smartFetch('/api/system/reset', { method: 'POST' });
+            const res = await smartFetch('/api/system/reset', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ confirm: 'RESET' })
+            });
             if (res && res.ok) {
                 showToast('System reset successfully', 'success');
                 setTimeout(() => window.location.reload(), 1500);

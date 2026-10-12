@@ -68,19 +68,65 @@ export function applyTemplate(template: string, metadata: Metadata, quality: num
     return result;
 }
 
+/** Characters that never belong in a path segment (ASCII control characters). */
+const stripControlChars = (value: string): string =>
+    Array.from(value)
+        .filter((char) => {
+            const code = char.charCodeAt(0);
+            return code >= 0x20 && code !== 0x7f;
+        })
+        .join('');
+
+/** "." and ".." (and Windows' "..." which it trims to "..") would walk the tree. */
+const isDotSegment = (segment: string): boolean => /^\.+$/.test(segment.trim());
+
+/**
+ * Turn a rendered folder template into path segments that stay below the
+ * download root, whatever the template or the Qobuz metadata contains:
+ * leading separators (absolute paths), drive letters and "."/".." segments are
+ * dropped (a drive-relative "C:x" is left to assertWithinBase, which refuses
+ * it on Windows). Metadata values are already stripped of separators by
+ * sanitizeFilename; this also covers the template's literal text.
+ */
+export function toContainedSegments(rendered: string): string[] {
+    return stripControlChars(rendered)
+        .split(/[/\\]/)
+        .filter((segment, index) => !(index === 0 && /^[A-Za-z]:$/.test(segment)))
+        .filter((segment) => segment.trim() !== '' && !isDotSegment(segment));
+}
+
 export function buildFolderPath(metadata: Metadata, quality: number): string {
     const rendered = applyTemplate(CONFIG.download.folderStructure, metadata, quality);
     // A placeholder may render empty on purpose ({disc_folder} on a single-disc
     // release), which would otherwise leave an empty segment and a stray
     // separator in the path.
-    return rendered.split(/[/\\]/).filter(Boolean).join(path.sep);
+    return toContainedSegments(rendered).join(path.sep);
 }
 
 export function buildFilename(metadata: Metadata, quality: number): string {
     const format = CONFIG.quality.formats[quality] || CONFIG.quality.formats[27]!;
     const ext = format.extension || 'flac';
-    const filename = applyTemplate(CONFIG.download.fileNaming, metadata, quality);
+    // The file name is one segment: separators from the template would point
+    // into folders that were never created (or outside the album folder).
+    const rendered = stripControlChars(
+        applyTemplate(CONFIG.download.fileNaming, metadata, quality)
+    ).replace(/[/\\]/g, '-');
+    const filename = rendered.trim() === '' || isDotSegment(rendered) ? 'Unknown' : rendered;
     return filename.endsWith(`.${ext}`) ? filename : `${filename}.${ext}`;
+}
+
+/**
+ * Throws unless `basePath/folderPath/filename` resolves inside `basePath`.
+ * Last line of defence after the template sanitising above.
+ */
+export function assertWithinBase(basePath: string, ...segments: string[]): void {
+    const base = path.resolve(basePath);
+    const target = path.resolve(base, ...segments);
+    const relative = path.relative(base, target);
+    const escapes =
+        relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+    if (!escapes) return;
+    throw new Error('Refusing to write outside the download folder');
 }
 
 /**
@@ -96,6 +142,7 @@ export function ensurePathSafety(
     const currentTotal = path.join(basePath, folderPath, filename).length;
 
     if (currentTotal <= MAX_TOTAL_PATH) {
+        assertWithinBase(basePath, folderPath, filename);
         return { folder: folderPath, file: filename };
     }
 
@@ -124,9 +171,11 @@ export function ensurePathSafety(
                 overLimit -= toCut;
             }
         }
-        newFolder = parts.join(path.sep);
+        // Truncation could leave a segment of dots only ("..").
+        newFolder = parts.filter((part) => part.trim() !== '' && !isDotSegment(part)).join(path.sep);
     }
 
     logger.warn(`Path too long (${currentTotal} chars). Truncated to fit limit.`, 'PROCESSOR');
+    assertWithinBase(basePath, newFolder, newFilename);
     return { folder: newFolder, file: newFilename };
 }

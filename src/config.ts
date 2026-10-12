@@ -1,5 +1,12 @@
 import { settingsService } from './services/settings.js';
 import { eventBus, EVENTS } from './utils/events.js';
+import {
+    FAVORITES_AUTO_DOWNLOAD_TYPES,
+    FAVORITES_SYNC_INTERVAL_RANGE,
+    MCP_CONFIG_PERMISSIONS,
+    type FavoritesAutoDownloadType,
+    type McpConfigPermission
+} from './config-values.js';
 
 const configCache = new Map<string, unknown>();
 
@@ -153,7 +160,29 @@ export interface Config {
         apiKey: string;
         model: string;
     };
+    /** MCP endpoint switches. The token hash is deliberately not part of CONFIG. */
+    mcp: {
+        enabled: boolean;
+        permissions: McpConfigPermission[];
+    };
+    favorites: {
+        autoDownload: boolean;
+        types: FavoritesAutoDownloadType[];
+        intervalHours: number;
+    };
 }
+
+export type { McpConfigPermission, FavoritesAutoDownloadType } from './config-values.js';
+
+/** Comma-separated list setting, reduced to the allowed values (deduplicated, in input order). */
+const getList = <T extends string>(key: string, def: string, allowed: readonly T[]): T[] => {
+    const raw = String(getSetting<string>(key, def));
+    const items = raw
+        .split(',')
+        .map((item) => item.trim())
+        .filter((item): item is T => (allowed as readonly string[]).includes(item));
+    return Array.from(new Set(items));
+};
 
 export const CONFIG: Config = {
     get credentials() {
@@ -337,6 +366,25 @@ export const CONFIG: Config = {
             apiKey: getStr('AI_API_KEY', ''),
             model: getStr('AI_MODEL', 'gemini-2.0-flash')
         }));
+    },
+
+    get mcp() {
+        return getCachedConfig('mcp', () => ({
+            enabled: getBool('MCP_ENABLED', false) === true,
+            permissions: getList('MCP_PERMISSIONS', 'library,download,manage', MCP_CONFIG_PERMISSIONS)
+        }));
+    },
+
+    get favorites() {
+        return getCachedConfig('favorites', () => {
+            const { min, max } = FAVORITES_SYNC_INTERVAL_RANGE;
+            const hours = getInt('FAVORITES_SYNC_INTERVAL_HOURS', 6);
+            return {
+                autoDownload: getBool('FAVORITES_AUTO_DOWNLOAD', false) === true,
+                types: getList('FAVORITES_AUTO_DOWNLOAD_TYPES', 'albums,tracks', FAVORITES_AUTO_DOWNLOAD_TYPES),
+                intervalHours: Math.min(max, Math.max(min, hours))
+            };
+        });
     }
 };
 

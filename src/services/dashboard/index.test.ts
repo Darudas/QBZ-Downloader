@@ -71,6 +71,7 @@ import request from 'supertest';
 import { DashboardService, dashboardService } from './index.js';
 import { logger } from '../../utils/logger.js';
 import { CONFIG } from '../../config.js';
+import { registerRoutes } from './routes.js';
 
 const services: DashboardService[] = [];
 
@@ -206,5 +207,107 @@ describe('DashboardService password guard', () => {
 
         const local = await request(getServer(service)).get('/api/status');
         expect(local.status).not.toBe(403);
+    });
+
+    it('limits distinct wrong passwords on every /api route, not only on login', async () => {
+        CONFIG.dashboard.password = 'hunter2';
+        const service = await startService();
+        const server = getServer(service);
+
+        for (let i = 0; i < 20; i++) {
+            const res = await request(server).get('/api/logs').set('x-password', `guess-${i}`);
+            expect(res.status).toBe(401);
+        }
+
+        const blocked = await request(server).post('/api/queue/add').set('x-password', 'guess-20');
+        expect(blocked.status).toBe(429);
+        expect(blocked.headers['retry-after']).toBeDefined();
+
+        // Even the right password is refused while blocked; otherwise the
+        // response would still tell which guess was correct.
+        const right = await request(server).get('/api/logs').set('x-password', 'hunter2');
+        expect(right.status).toBe(429);
+        const verify = await request(server).get('/api/auth/verify').set('x-password', 'hunter2');
+        expect(verify.status).toBe(429);
+
+        // Requests that present no password are not affected by the block.
+        const anonymous = await request(server).get('/api/logs');
+        expect(anonymous.status).toBe(401);
+    });
+
+    it('does not lock out a tab that keeps sending the same stale password', async () => {
+        CONFIG.dashboard.password = 'hunter2';
+        const service = await startService();
+        const server = getServer(service);
+
+        for (let i = 0; i < 30; i++) {
+            const res = await request(server).get('/api/logs').set('x-password', 'old-password');
+            expect(res.status).toBe(401);
+        }
+
+        const right = await request(server).get('/api/logs').set('x-password', 'hunter2');
+        expect(right.status).toBe(404); // past the guard
+    });
+});
+
+describe('DashboardService JSON errors', () => {
+    it('answers a malformed JSON body with a 400 JSON error', async () => {
+        const service = await startService();
+
+        const response = await request(getServer(service))
+            .post('/api/settings/update')
+            .set('Content-Type', 'application/json')
+            .send('{"ui_theme": ');
+
+        expect(response.status).toBe(400);
+        expect(response.headers['content-type']).toMatch(/application\/json/);
+        expect(response.body).toEqual({ error: 'Malformed JSON in request body', code: 'INVALID_JSON' });
+    });
+
+    it('answers an oversized body with a 413 JSON error', async () => {
+        const service = await startService();
+
+        const response = await request(getServer(service))
+            .post('/api/settings/update')
+            .set('Content-Type', 'application/json')
+            .send(JSON.stringify({ x: 'a'.repeat(11 * 1024 * 1024) }));
+
+        expect(response.status).toBe(413);
+        expect(response.body.code).toBe('PAYLOAD_TOO_LARGE');
+    });
+
+    it('turns an unhandled route error into a generic JSON 500 without a stack trace', async () => {
+        vi.mocked(registerRoutes).mockImplementationOnce((app) => {
+            app.get('/api/boom', () => {
+                throw new Error('internal detail /home/user/secret.ts:42');
+            });
+        });
+        const service = await startService();
+
+        const response = await request(getServer(service)).get('/api/boom');
+
+        expect(response.status).toBe(500);
+        expect(response.headers['content-type']).toMatch(/application\/json/);
+        expect(response.body).toEqual({ error: 'An unexpected error occurred.', code: 'INTERNAL_ERROR' });
+        expect(response.text).not.toContain('secret.ts');
+        expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('internal detail'), 'WEB');
+    });
+
+    it('keeps the status and message of app errors', async () => {
+        const { ValidationError } = await import('../../utils/errors.js');
+        vi.mocked(registerRoutes).mockImplementationOnce((app) => {
+            app.post('/api/invalid', () => {
+                throw new ValidationError('Invalid settings: cover_size: Expected one of: small');
+            });
+        });
+        const service = await startService();
+
+        const response = await request(getServer(service)).post('/api/invalid');
+
+        expect(response.status).toBe(400);
+        expect(response.body).toEqual({
+            error: 'Invalid settings: cover_size: Expected one of: small',
+            code: 'VALIDATION_ERROR'
+        });
     });
 });

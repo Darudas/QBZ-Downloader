@@ -32,6 +32,11 @@ import { playlistWatcherService } from '../services/PlaylistWatcherService.js';
 import { isPathWithinManagedRoots } from '../utils/paths.js';
 import { queueLibraryUpgrade } from '../services/library-upgrade.js';
 import { retagFileFromQobuz } from '../services/metadata-repair.js';
+import {
+    applySafeSettings,
+    getSafeSettings,
+    safeSettingsUpdateSchema
+} from '../services/settings-schema.js';
 import fs from 'fs';
 import { ForbiddenError, NotFoundError, toSafeErrorPayload, ValidationError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
@@ -618,6 +623,15 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         return sliceItems(files.slice(off, off + lim), files.length, off, lim);
     });
 
+    tool('get_settings', 'read', {
+        title: 'Download settings',
+        description:
+            'The download-related app settings (default quality, concurrency, cover art, lyrics, export ' +
+            'format, favorites auto-download). Paths, templates, credentials and server settings are not exposed.',
+        inputSchema: z.object({}),
+        annotations: READ_LOCAL
+    }, () => getSafeSettings());
+
     /* --------------------------- library -------------------------- */
 
     const favoriteIds = z.object({
@@ -939,6 +953,15 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         inputSchema: z.object({ file_path: z.string().min(1).max(4096), track_id: numericId }),
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true }
     }, ({ file_path, track_id }) => retagFileFromQobuz(file_path, track_id));
+
+    tool('update_settings', 'manage', {
+        title: 'Change download settings',
+        description:
+            'Change one or more download settings (see get_settings). Only the listed fields can be changed; ' +
+            'paths, folder/file templates, credentials, the dashboard and MCP access cannot. Returns the new settings.',
+        inputSchema: safeSettingsUpdateSchema,
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+    }, (args) => applySafeSettings(args));
 
     /* ------------------------- destructive ------------------------ */
 

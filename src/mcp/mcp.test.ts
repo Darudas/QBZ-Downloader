@@ -131,6 +131,7 @@ import { downloadPurchases } from '../services/favorites-download.js';
 import { favoritesSyncService } from '../services/favorites-sync.js';
 import { historyService } from '../services/history.js';
 import { createSmartPlaylist, tracksForFilter } from '../services/smart-playlists.js';
+import { eventBus, EVENTS } from '../utils/events.js';
 
 const app = express();
 app.use('/mcp', createMcpEndpoint());
@@ -402,6 +403,51 @@ describe('MCP endpoint', () => {
             }
         }
         expect(tools.find((t) => t.name === 'clear_download_history')?.annotations?.destructiveHint).toBe(true);
+        await client.close();
+    });
+    it('reads the safe settings subset and changes only allowlisted settings', async () => {
+        state.settings.set('DOWNLOADS_PATH', '/secret/music');
+        state.settings.set('QOBUZ_USER_AUTH_TOKEN', 'user-token-secret');
+        state.settings.set('FOLDER_TEMPLATE', '{secret}/{album}');
+        eventBus.emit(EVENTS.SETTINGS.UPDATED, { keys: [] });
+        const client = await connect(await newToken());
+
+        const read = await client.callTool({ name: 'get_settings', arguments: {} });
+        expect(read.structuredContent).toMatchObject({ default_quality: 27, max_concurrency: 2 });
+        expect(JSON.stringify(read)).not.toMatch(/secret/);
+
+        const changed = await client.callTool({
+            name: 'update_settings',
+            arguments: { max_concurrency: 4, embed_cover_art: false, favorites_auto_download_types: ['albums'] }
+        });
+        expect(changed.isError).toBeFalsy();
+        expect(changed.structuredContent).toMatchObject({
+            updated: ['max_concurrency', 'embed_cover_art', 'favorites_auto_download_types']
+        });
+        expect(state.settings.get('MAX_CONCURRENCY')).toBe('4');
+        expect(state.settings.get('EMBED_COVER_ART')).toBe('false');
+        expect(state.settings.get('FAVORITES_AUTO_DOWNLOAD_TYPES')).toBe('albums');
+
+        for (const args of [
+            { downloads_path: '/tmp' },
+            { folder_template: '../{album}' },
+            { max_concurrency: 500 },
+            {}
+        ]) {
+            const refused = await client.callTool({ name: 'update_settings', arguments: args });
+            expect(refused.isError).toBe(true);
+        }
+        expect(state.settings.get('DOWNLOADS_PATH')).toBe('/secret/music');
+        expect(state.settings.get('FOLDER_TEMPLATE')).toBe('{secret}/{album}');
+        await client.close();
+    });
+
+    it('offers update_settings only with the manage group', async () => {
+        state.settings.set('MCP_PERMISSIONS', 'library');
+        const client = await connect(await newToken());
+        const names = (await client.listTools()).tools.map((t) => t.name);
+        expect(names).toContain('get_settings');
+        expect(names).not.toContain('update_settings');
         await client.close();
     });
 });

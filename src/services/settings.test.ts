@@ -87,6 +87,32 @@ describe('SettingsService', () => {
         expect(process.env.MCP_TOKEN_HASH).toBeUndefined();
     });
 
+    it('never mirrors secrets into process.env, but still mirrors plain settings', () => {
+        const before = process.env.AI_API_KEY;
+        settings.setMany({ AI_API_KEY: 'sk-secret', UI_ACCENT: '#123456' });
+        expect(process.env.AI_API_KEY).toBe(before);
+        expect(process.env.UI_ACCENT).toBe('#123456');
+        delete process.env.UI_ACCENT;
+    });
+
+    it('does not import MCP_TOKEN_* from the environment', () => {
+        process.env.MCP_TOKEN_HASH = 'b'.repeat(64);
+        try {
+            expect(settings.get('MCP_TOKEN_HASH')).toBeUndefined();
+        } finally {
+            delete process.env.MCP_TOKEN_HASH;
+        }
+    });
+
+    it('accepts the favorites auto-download keys', () => {
+        settings.setMany({
+            FAVORITES_AUTO_DOWNLOAD: 'true',
+            FAVORITES_AUTO_DOWNLOAD_TYPES: 'albums',
+            FAVORITES_SYNC_INTERVAL_HOURS: '6'
+        });
+        expect(settings.get('FAVORITES_AUTO_DOWNLOAD_TYPES')).toBe('albums');
+    });
+
     it('should return many settings at once', () => {
         settings.set('UI_THEME', '1');
         settings.set('UI_ACCENT', '2');
