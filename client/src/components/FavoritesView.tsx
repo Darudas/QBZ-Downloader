@@ -120,6 +120,9 @@ export const FavoritesView: React.FC = () => {
     const favoriteIds = useFavoritesStore((state) => state[tab]);
     const loadedIds = useFavoritesStore((state) => state.loaded);
     const visible = loadedIds ? items.filter((item) => favoriteIds.has(String(item.id))) : items;
+    // Un-favoriting shrinks the server list, so the next page starts after the
+    // items that are still favorites, not after everything loaded so far.
+    const nextOffset = visible.length;
 
     const handleDownloadAll = async () => {
         setConfirmDownload(false);
@@ -288,7 +291,7 @@ export const FavoritesView: React.FC = () => {
 
             {hasMore && !error && (
                 <div className="pagination">
-                    <button disabled={loading} onClick={() => loadPage(tab, items.length)}>
+                    <button disabled={loading} onClick={() => loadPage(tab, nextOffset)}>
                         {loading ? t('msg_loading') : t('action_load_more')}
                     </button>
                 </div>

@@ -83,6 +83,28 @@ describe('FavoritesView', () => {
         expect(calls.find((c) => c.method === 'DELETE')?.body).toEqual({ albumIds: ['a2'] });
     });
 
+    it('loads the next page after an un-favorite without skipping an item', async () => {
+        const calls = mockFetchRoutes({
+            'GET /api/favorites/ids': () => ({ albums: ['a1', 'a2', 'a3'], tracks: [], artists: [] }),
+            'GET /api/favorites': ({ url }) =>
+                url.includes('offset=0')
+                    ? page(albums, { total: 3, has_more: true })
+                    : page([{ id: 'a3', title: 'Third Album', artist: { name: 'Band' } }], { total: 2, offset: 1 }),
+            'DELETE /api/favorites': () => ({ action: 'remove' })
+        });
+        render(<FavoritesView />);
+        const row = (await screen.findByText('First Album')).closest('.track-item') as HTMLElement;
+        const heart = within(row).getByRole('button', { name: 'action_favorite' });
+        await waitFor(() => expect(heart).toHaveAttribute('aria-pressed', 'true'));
+        fireEvent.click(heart);
+        await waitFor(() => expect(screen.queryByText('First Album')).not.toBeInTheDocument());
+
+        fireEvent.click(screen.getByText('action_load_more'));
+        expect(await screen.findByText('Third Album')).toBeInTheDocument();
+        // The server list shrank by one: one item (Second Album) remains before the next page.
+        expect(calls.filter((c) => c.method === 'GET' && c.url.startsWith('/api/favorites?')).at(-1)?.url).toContain('offset=1');
+    });
+
     it('switches to tracks and queues all missing favorites after confirming', async () => {
         const calls = mockFetchRoutes({
             'GET /api/favorites/ids': () => ({ albums: [], tracks: ['7'], artists: [] }),
