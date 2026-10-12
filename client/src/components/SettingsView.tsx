@@ -6,6 +6,7 @@ import { useTheme } from '../contexts/ThemeContext';
 import { ConfirmModal } from './Modals';
 import { Icons } from './Icons';
 import { McpSettingsSection } from './McpSettingsSection';
+import { FavoritesSyncSettingsSection } from './FavoritesSyncSettingsSection';
 import { normalizePasswordForAuth } from '../utils/crypto';
 
 interface AppSettings {
@@ -1102,6 +1103,7 @@ export const SettingsView: React.FC = () => {
                 </div>
             </div>
 
+            <FavoritesSyncSettingsSection />
             <McpSettingsSection />
 
             <div className="settings-section">

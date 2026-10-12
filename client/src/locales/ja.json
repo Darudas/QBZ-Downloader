@@ -296,5 +296,16 @@
     "label_upgrade_options": "件の候補",
     "label_match": "一致度",
     "label_variant": "別バージョン",
-    "label_unknown_album": "不明なアルバム"
+    "label_unknown_album": "不明なアルバム",
+    "msg_favorites_sync_saved": "お気に入りの自動ダウンロードを保存しました",
+    "msg_favorites_sync_baseline": "基準を記録しました：今後追加したお気に入りがダウンロードされます",
+    "title_favorites_sync": "新しいお気に入りを自動でダウンロード",
+    "msg_favorites_sync_hint": "Qobuzのお気に入りを定期的に確認し、前回以降に追加されたものをキューに追加します。有効にした後に追加したお気に入りのみがダウンロードされます。既存のものはお気に入り画面の「未取得をすべてダウンロード」を使ってください。",
+    "label_favorites_sync_enabled": "新しいお気に入りを自動でダウンロード",
+    "label_favorites_sync_interval": "確認間隔（時間、1～168）",
+    "label_last_check": "前回の確認",
+    "label_never": "なし",
+    "label_next_check": "次回の確認",
+    "msg_favorites_sync_no_login": "先にQobuzにログインしてください",
+    "action_check_now": "今すぐ確認"
 }

@@ -296,5 +296,16 @@
     "label_upgrade_options": "seçenek",
     "label_match": "Eşleşme",
     "label_variant": "Varyant",
-    "label_unknown_album": "Bilinmeyen Albüm"
+    "label_unknown_album": "Bilinmeyen Albüm",
+    "msg_favorites_sync_saved": "Favorilerin otomatik indirilmesi kaydedildi",
+    "msg_favorites_sync_baseline": "Başlangıç noktası kaydedildi: bundan sonra eklenen favoriler indirilecek",
+    "title_favorites_sync": "Yeni favorileri otomatik indir",
+    "msg_favorites_sync_hint": "Qobuz favorilerinizi düzenli olarak kontrol eder ve son kontrolden beri eklenenleri kuyruğa alır. Açıldıktan sonra yalnızca sonradan eklenen favoriler indirilir; mevcutlar için Favoriler'deki \"Eksiklerin hepsini indir\" seçeneğini kullanın.",
+    "label_favorites_sync_enabled": "Yeni favorileri otomatik indir",
+    "label_favorites_sync_interval": "Kontrol aralığı (saat, 1–168)",
+    "label_last_check": "Son kontrol",
+    "label_never": "hiç",
+    "label_next_check": "Sonraki kontrol",
+    "msg_favorites_sync_no_login": "önce Qobuz'a giriş yapın",
+    "action_check_now": "Şimdi kontrol et"
 }

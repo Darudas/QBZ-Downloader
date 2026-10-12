@@ -296,5 +296,16 @@
     "mcp_copied": "Disalin",
     "mcp_copy_failed": "Gagal menyalin, pilih teks secara manual",
     "mcp_save_failed": "Gagal menyimpan pengaturan MCP",
-    "mcp_more_clients": "Open WebUI, n8n, dan Cursor: lihat docs/mcp.md di repositori."
+    "mcp_more_clients": "Open WebUI, n8n, dan Cursor: lihat docs/mcp.md di repositori.",
+    "msg_favorites_sync_saved": "Unduh otomatis favorit disimpan",
+    "msg_favorites_sync_baseline": "Titik awal dicatat: favorit yang ditambahkan mulai sekarang akan diunduh",
+    "title_favorites_sync": "Unduh favorit baru secara otomatis",
+    "msg_favorites_sync_hint": "Memeriksa favorit Qobuz Anda secara berkala dan mengantrekan yang ditambahkan sejak pemeriksaan terakhir. Saat diaktifkan, hanya favorit yang ditambahkan setelahnya yang diunduh; gunakan \"Unduh semua yang belum ada\" di Favorit untuk yang sudah ada.",
+    "label_favorites_sync_enabled": "Unduh favorit baru secara otomatis",
+    "label_favorites_sync_interval": "Interval pemeriksaan (jam, 1–168)",
+    "label_last_check": "Pemeriksaan terakhir",
+    "label_never": "belum pernah",
+    "label_next_check": "Pemeriksaan berikutnya",
+    "msg_favorites_sync_no_login": "masuk ke Qobuz terlebih dahulu",
+    "action_check_now": "Periksa sekarang"
 }

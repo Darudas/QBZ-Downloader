@@ -183,21 +183,11 @@ describe('PurchasesView', () => {
         expect(screen.getByText('Singer • Parent')).toBeInTheDocument();
     });
 
-    it('queues every purchase one by one and reports a summary', async () => {
+    it('queues all purchases on the server and reports a summary', async () => {
         const calls = mockFetchRoutes({
-            'GET /api/purchases': ({ url }) =>
-                url.includes('limit=500')
-                    ? url.includes('offset=0')
-                        ? page(albums, { has_more: true, total: 3 })
-                        : page([{ id: 'p3', title: 'Bought Three' }], { total: 3 })
-                    : page(albums, { total: 3, has_more: true }),
+            'GET /api/purchases': () => page(albums, { total: 3, has_more: true }),
             'GET /api/favorites/ids': favoriteIds,
-            'POST /api/queue/add': ({ body }) => {
-                const id = (body as { id: string }).id;
-                if (id === 'p2') return { deduped: true };
-                if (id === 'p3') return { status: 400, body: { error: 'nope' } };
-                return { deduped: false };
-            }
+            'POST /api/purchases/download': () => ({ queued: 1, deduped: 0, skipped: 1, failed: 1 })
         });
         render(<PurchasesView />);
         await screen.findByText('Bought One');
@@ -206,12 +196,8 @@ describe('PurchasesView', () => {
         await waitFor(() =>
             expect(mocks.showToast).toHaveBeenCalledWith('msg_purchases_queued: 1 · label_skipped: 1 · label_failed: 1', 'info')
         );
-        const queued = calls.filter((c) => c.url === '/api/queue/add').map((c) => c.body);
-        expect(queued).toEqual([
-            { type: 'album', id: 'p1' },
-            { type: 'album', id: 'p2' },
-            { type: 'album', id: 'p3' }
-        ]);
+        expect(calls.find((c) => c.url === '/api/purchases/download')?.body).toEqual({ type: 'albums' });
+        expect(calls.some((c) => c.url === '/api/queue/add')).toBe(false);
     });
 
     it('shows the server error when purchases cannot load', async () => {

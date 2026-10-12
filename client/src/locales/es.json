@@ -296,5 +296,16 @@
     "label_upgrade_options": "opciones",
     "label_match": "Coincidencia",
     "label_variant": "Variante",
-    "label_unknown_album": "Álbum desconocido"
+    "label_unknown_album": "Álbum desconocido",
+    "msg_favorites_sync_saved": "Descarga automática de favoritos guardada",
+    "msg_favorites_sync_baseline": "Punto de partida guardado: se descargarán los favoritos que añadas a partir de ahora",
+    "title_favorites_sync": "Descargar favoritos nuevos automáticamente",
+    "msg_favorites_sync_hint": "Revisa tus favoritos de Qobuz periódicamente y pone en cola los añadidos desde la última revisión. Al activarlo solo se descargan los favoritos añadidos después; usa «Descargar todo lo que falta» en Favoritos para los existentes.",
+    "label_favorites_sync_enabled": "Descargar favoritos nuevos automáticamente",
+    "label_favorites_sync_interval": "Intervalo de revisión (horas, 1–168)",
+    "label_last_check": "Última revisión",
+    "label_never": "nunca",
+    "label_next_check": "Próxima revisión",
+    "msg_favorites_sync_no_login": "inicia sesión en Qobuz primero",
+    "action_check_now": "Revisar ahora"
 }

@@ -296,5 +296,16 @@
     "label_upgrade_options": "个选项",
     "label_match": "匹配度",
     "label_variant": "其他版本",
-    "label_unknown_album": "未知专辑"
+    "label_unknown_album": "未知专辑",
+    "msg_favorites_sync_saved": "已保存收藏自动下载设置",
+    "msg_favorites_sync_baseline": "已记录基准：从现在起新增的收藏将被下载",
+    "title_favorites_sync": "自动下载新收藏",
+    "msg_favorites_sync_hint": "定期检查你的 Qobuz 收藏，并将上次检查后新增的内容加入队列。开启后只会下载之后新增的收藏；已有收藏请在“收藏”中使用“下载所有缺失项”。",
+    "label_favorites_sync_enabled": "自动下载新收藏",
+    "label_favorites_sync_interval": "检查间隔（小时，1–168）",
+    "label_last_check": "上次检查",
+    "label_never": "从未",
+    "label_next_check": "下次检查",
+    "msg_favorites_sync_no_login": "请先登录 Qobuz",
+    "action_check_now": "立即检查"
 }

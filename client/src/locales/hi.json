@@ -296,5 +296,16 @@
     "label_upgrade_options": "विकल्प",
     "label_match": "मिलान",
     "label_variant": "अलग संस्करण",
-    "label_unknown_album": "अज्ञात एल्बम"
+    "label_unknown_album": "अज्ञात एल्बम",
+    "msg_favorites_sync_saved": "पसंदीदा का स्वचालित डाउनलोड सहेजा गया",
+    "msg_favorites_sync_baseline": "आधार दर्ज किया गया: अब से जोड़े गए पसंदीदा डाउनलोड होंगे",
+    "title_favorites_sync": "नए पसंदीदा अपने-आप डाउनलोड करें",
+    "msg_favorites_sync_hint": "आपके Qobuz पसंदीदा नियमित रूप से जाँचता है और पिछली जाँच के बाद जोड़े गए आइटम कतार में डालता है। चालू करने के बाद जोड़े गए पसंदीदा ही डाउनलोड होते हैं; मौजूदा के लिए पसंदीदा में \"सभी गायब डाउनलोड करें\" का उपयोग करें।",
+    "label_favorites_sync_enabled": "नए पसंदीदा अपने-आप डाउनलोड करें",
+    "label_favorites_sync_interval": "जाँच अंतराल (घंटे, 1–168)",
+    "label_last_check": "पिछली जाँच",
+    "label_never": "कभी नहीं",
+    "label_next_check": "अगली जाँच",
+    "msg_favorites_sync_no_login": "पहले Qobuz में लॉग इन करें",
+    "action_check_now": "अभी जाँचें"
 }

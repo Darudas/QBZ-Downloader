@@ -296,5 +296,16 @@
     "release_type_ep_single": "EPs & singles",
     "release_type_other": "Other",
     "release_type_download": "Download only",
-    "release_type_composer": "As composer"
+    "release_type_composer": "As composer",
+    "msg_favorites_sync_saved": "Favorites auto-download saved",
+    "msg_favorites_sync_baseline": "Baseline recorded: favorites added from now on will be downloaded",
+    "title_favorites_sync": "Download new favorites automatically",
+    "msg_favorites_sync_hint": "Checks your Qobuz favorites regularly and queues the ones you added since the last check. Turning it on downloads only favorites added afterwards; use \"Download all missing\" in Favorites for the existing ones.",
+    "label_favorites_sync_enabled": "Download new favorites automatically",
+    "label_favorites_sync_interval": "Check interval (hours, 1–168)",
+    "label_last_check": "Last check",
+    "label_never": "never",
+    "label_next_check": "Next check",
+    "msg_favorites_sync_no_login": "log in to Qobuz first",
+    "action_check_now": "Check now"
 }

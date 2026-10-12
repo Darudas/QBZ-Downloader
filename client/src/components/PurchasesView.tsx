@@ -23,11 +23,11 @@ type PurchaseTab = 'albums' | 'tracks';
 type PurchaseItem = QobuzAlbumItem & QobuzTrackItem;
 
 const PAGE_SIZE = 50;
-/** Server cap for one page; "download all" walks the whole list with it. */
-const FULL_PAGE = 500;
-
-interface QueueAddResult {
-    deduped?: boolean;
+interface DownloadResult {
+    queued: number;
+    deduped: number;
+    skipped: number;
+    failed: number;
 }
 
 export const PurchasesView: React.FC = () => {
@@ -70,50 +70,29 @@ export const PurchasesView: React.FC = () => {
         void loadPage(tab, 0);
     }, [tab, loadPage]);
 
-    /** Queues every purchase of the current tab one by one and reports a single summary. */
+    /**
+     * Queues every purchase of the current tab on the server, which skips
+     * tracks that are already in the library.
+     */
     const downloadAll = async () => {
         setConfirmAll(false);
-        const type = tab;
-        const kind = type === 'albums' ? 'album' : 'track';
-        setProgress({ done: 0, total: 0 });
-        let all: PurchaseItem[] = [];
+        setProgress({ done: 0, total: total });
         try {
-            for (let offset = 0; ; offset += FULL_PAGE) {
-                const page = await apiJson<PageResult<PurchaseItem>>(
-                    `/api/purchases?type=${type}&limit=${FULL_PAGE}&offset=${offset}`
-                );
-                all = all.concat(page.items);
-                if (!page.has_more || page.items.length === 0) break;
-            }
+            const result = await apiJson<DownloadResult>('/api/purchases/download', {
+                method: 'POST',
+                body: { type: tab }
+            });
+            const skipped = result.skipped + result.deduped;
+            showToast(
+                `${t('msg_purchases_queued')}: ${result.queued} · ${t('label_skipped')}: ${skipped}` +
+                    (result.failed ? ` · ${t('label_failed')}: ${result.failed}` : ''),
+                result.failed ? 'info' : 'success'
+            );
         } catch (err) {
-            setProgress(null);
             showToast(errorMessage(err), 'error');
-            return;
+        } finally {
+            setProgress(null);
         }
-
-        let queued = 0;
-        let skipped = 0;
-        let failed = 0;
-        setProgress({ done: 0, total: all.length });
-        for (const [index, item] of all.entries()) {
-            try {
-                const result = await apiJson<QueueAddResult>('/api/queue/add', {
-                    method: 'POST',
-                    body: { type: kind, id: String(item.id) }
-                });
-                if (result?.deduped) skipped++;
-                else queued++;
-            } catch {
-                failed++;
-            }
-            setProgress({ done: index + 1, total: all.length });
-        }
-        setProgress(null);
-        showToast(
-            `${t('msg_purchases_queued')}: ${queued} · ${t('label_skipped')}: ${skipped}` +
-                (failed ? ` · ${t('label_failed')}: ${failed}` : ''),
-            failed ? 'info' : 'success'
-        );
     };
 
     const openItem = (item: PurchaseItem) => {
@@ -158,9 +137,7 @@ export const PurchasesView: React.FC = () => {
                         style={{ display: 'flex', alignItems: 'center', gap: 6 }}
                     >
                         <Icons.Download width={14} height={14} />
-                        {progress
-                            ? `${t('msg_queuing')} ${progress.done}/${progress.total || '…'}`
-                            : t('action_download_all')}
+                        {progress ? t('msg_queuing') : t('action_download_all')}
                     </button>
                 </div>
             </div>

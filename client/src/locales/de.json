@@ -296,5 +296,16 @@
     "label_upgrade_options": "Optionen",
     "label_match": "Treffer",
     "label_variant": "Variante",
-    "label_unknown_album": "Unbekanntes Album"
+    "label_unknown_album": "Unbekanntes Album",
+    "msg_favorites_sync_saved": "Automatischer Favoriten-Download gespeichert",
+    "msg_favorites_sync_baseline": "Ausgangsstand gespeichert: ab jetzt hinzugefügte Favoriten werden heruntergeladen",
+    "title_favorites_sync": "Neue Favoriten automatisch herunterladen",
+    "msg_favorites_sync_hint": "Prüft regelmäßig deine Qobuz-Favoriten und lädt alles, was seit der letzten Prüfung dazugekommen ist. Beim Einschalten werden nur später hinzugefügte Favoriten geladen; für die bestehenden nutze „Alle fehlenden herunterladen“ unter Favoriten.",
+    "label_favorites_sync_enabled": "Neue Favoriten automatisch herunterladen",
+    "label_favorites_sync_interval": "Prüfintervall (Stunden, 1–168)",
+    "label_last_check": "Letzte Prüfung",
+    "label_never": "nie",
+    "label_next_check": "Nächste Prüfung",
+    "msg_favorites_sync_no_login": "zuerst bei Qobuz anmelden",
+    "action_check_now": "Jetzt prüfen"
 }

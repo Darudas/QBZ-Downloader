@@ -296,5 +296,16 @@
     "label_upgrade_options": "options",
     "label_match": "Correspondance",
     "label_variant": "Variante",
-    "label_unknown_album": "Album inconnu"
+    "label_unknown_album": "Album inconnu",
+    "msg_favorites_sync_saved": "Téléchargement automatique des favoris enregistré",
+    "msg_favorites_sync_baseline": "Point de départ enregistré : les favoris ajoutés à partir de maintenant seront téléchargés",
+    "title_favorites_sync": "Télécharger automatiquement les nouveaux favoris",
+    "msg_favorites_sync_hint": "Vérifie régulièrement vos favoris Qobuz et met en file ceux ajoutés depuis la dernière vérification. À l'activation, seuls les favoris ajoutés ensuite sont téléchargés ; utilisez « Télécharger tout ce qui manque » dans Favoris pour les existants.",
+    "label_favorites_sync_enabled": "Télécharger automatiquement les nouveaux favoris",
+    "label_favorites_sync_interval": "Intervalle de vérification (heures, 1–168)",
+    "label_last_check": "Dernière vérification",
+    "label_never": "jamais",
+    "label_next_check": "Prochaine vérification",
+    "msg_favorites_sync_no_login": "connectez-vous d'abord à Qobuz",
+    "action_check_now": "Vérifier maintenant"
 }
