@@ -5,6 +5,7 @@ import { useLanguage } from '../contexts/LanguageContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { ConfirmModal } from './Modals';
 import { Icons } from './Icons';
+import { McpSettingsSection } from './McpSettingsSection';
 import { normalizePasswordForAuth } from '../utils/crypto';
 
 interface AppSettings {
@@ -1092,6 +1093,8 @@ export const SettingsView: React.FC = () => {
                     </button>
                 </div>
             </div>
+
+            <McpSettingsSection />
 
             <div className="settings-section">
                 <h3 className="section-title">

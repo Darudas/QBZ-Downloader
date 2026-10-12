@@ -50,7 +50,9 @@ Related documents:
 
 ## Next steps, by priority
 
-1. **MCP section in Settings**: `client/src/components/McpSettingsSection.tsx`.
+1. ~~MCP section in Settings~~ **done**: `client/src/components/McpSettingsSection.tsx`. Translated
+   only into en/de; the other locales fall back to English. Still to do there: add the keys to the other
+   7 locale files and write a component test. Original task notes:
    - It needs an enable toggle, permission-group checkboxes, generate/rotate/revoke for the token (the
      token is shown only once) and ready-to-copy client configs.
    - The backend routes already exist: `GET /api/mcp/status`, `POST /api/mcp/config` with

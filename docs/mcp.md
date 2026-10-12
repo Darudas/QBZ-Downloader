@@ -11,8 +11,11 @@ works with Claude Desktop, Claude Code, Open WebUI, n8n, Cursor and any other MC
 
 ## 1. Enable it and create a token
 
-The dashboard UI section is not built yet. Until then, use the dashboard API. Its routes sit behind the
-dashboard password, so send `x-password` if you set one.
+In the dashboard, open **Settings → AI control (MCP)**. There you can enable the endpoint, choose the
+allowed actions, generate the token (shown once) and copy ready-made client configs.
+
+Alternatively, use the dashboard API. Its routes sit behind the dashboard password, so send
+`x-password` if you set one.
 
 ```bash
 H='x-password: <dashboard password>'   # omit if no password is set

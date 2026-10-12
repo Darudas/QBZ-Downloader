@@ -265,7 +265,7 @@ Conventions for every tool:
   - resources and prompts;
   - a Host-header check for loopback binds;
   - a bridge end-to-end test.
-- **UI still missing:** the MCP section in Settings. For now enable MCP with `curl` (see `docs/mcp.md`).
+- **UI:** the MCP section in Settings is done (`McpSettingsSection.tsx`, en/de strings).
 
 **Verification:** `npx tsc --noEmit` passes, lint has 0 errors, 384 backend tests pass (272 before), and
 82 client tests pass. The client typecheck passes.
