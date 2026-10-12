@@ -17,7 +17,7 @@ After bumping `package.json` version, run:
 npm run sync-version
 ```
 
-This also updates the README badge and CHANGELOG top entry. **Do not bump versions manually.**
+This also updates the README badge and turns the CHANGELOG `## [Unreleased]` section into the new version's entry (a no-op once that version has a heading). **Do not bump versions manually.**
 
 ## Build order
 
