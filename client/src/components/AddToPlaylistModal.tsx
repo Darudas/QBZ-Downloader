@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { apiJson } from '../utils/api';
 import { useToast } from '../contexts/ToastContext';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -41,6 +41,24 @@ export const AddToPlaylistModal: React.FC<AddToPlaylistModalProps> = ({ isOpen, 
     const [error, setError] = useState('');
     const [busyId, setBusyId] = useState<string | null>(null);
     const [newName, setNewName] = useState('');
+    const nameInput = useRef<HTMLInputElement>(null);
+
+    // Focus the name field on open and give focus back to the opener on close.
+    useEffect(() => {
+        if (!isOpen) return;
+        const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+        nameInput.current?.focus();
+        return () => opener?.focus();
+    }, [isOpen]);
+
+    useEffect(() => {
+        if (!isOpen) return;
+        const onKey = (event: KeyboardEvent) => {
+            if (event.key === 'Escape') onClose();
+        };
+        document.addEventListener('keydown', onKey);
+        return () => document.removeEventListener('keydown', onKey);
+    }, [isOpen, onClose]);
 
     useEffect(() => {
         if (!isOpen) return;
@@ -150,6 +168,7 @@ export const AddToPlaylistModal: React.FC<AddToPlaylistModalProps> = ({ isOpen, 
                 <form onSubmit={createWithTracks} style={{ display: 'flex', gap: 8, margin: '16px 0' }}>
                     <div className="form-group" style={{ flex: 1, margin: 0 }}>
                         <input
+                            ref={nameInput}
                             type="text"
                             value={newName}
                             maxLength={200}

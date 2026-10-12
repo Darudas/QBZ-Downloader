@@ -6,6 +6,7 @@ import { useNavigation } from '../contexts/NavigationContext';
 import { useQueueActions } from '../hooks/useQueueActions';
 import { useLatestRequest } from '../hooks/useLatestRequest';
 import { appendPage } from '../utils/lists';
+import { activationProps } from '../utils/a11y';
 import { FavoriteButton } from './FavoriteButton';
 import { ConfirmModal } from './Modals';
 import { Icons } from './Icons';
@@ -173,12 +174,13 @@ export const PurchasesView: React.FC = () => {
                     const artist = isAlbum ? albumArtist(item) : item.performer?.name || albumArtist(item.album ?? { id: '' });
                     const cover = albumCover(isAlbum ? item : item.album);
                     const subtitle = isAlbum ? artist : [artist, item.album?.title].filter(Boolean).join(' • ');
+                    const openable = isAlbum || Boolean(item.album?.id);
                     return (
                         <div
                             key={id}
                             className="track-item"
-                            onClick={() => openItem(item)}
-                            style={{ cursor: 'pointer', padding: '10px 16px', borderRadius: 8 }}
+                            {...(openable ? activationProps(() => openItem(item), title) : {})}
+                            style={{ cursor: openable ? 'pointer' : 'default', padding: '10px 16px', borderRadius: 8 }}
                         >
                             <div style={{ display: 'flex', alignItems: 'center', gap: 16, flex: 1, minWidth: 0 }}>
                                 {cover ? (

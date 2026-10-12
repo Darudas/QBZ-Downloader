@@ -5,6 +5,7 @@ import { useQueueActions } from '../hooks/useQueueActions';
 import { FavoriteButton } from './FavoriteButton';
 import { Icons } from './Icons';
 import { uniqueBy } from '../utils/lists';
+import { activationProps } from '../utils/a11y';
 import { albumArtist, albumCover, albumTitle, isHiRes, releaseYear, type QobuzAlbumItem } from '../utils/qobuzItems';
 
 interface AlbumGridProps {
@@ -33,7 +34,7 @@ export const AlbumGrid: React.FC<AlbumGridProps> = ({ albums, subtitle, extraAct
                     ? subtitle(album)
                     : [albumArtist(album), releaseYear(album)].filter(Boolean).join(' • ');
                 return (
-                    <div key={id} className="grid-item" onClick={() => navigate('album', { id })}>
+                    <div key={id} className="grid-item" {...activationProps(() => navigate('album', { id }), title)}>
                         <div className="grid-cover-container">
                             {cover ? (
                                 <img src={cover} className="grid-cover" alt="" loading="lazy" />

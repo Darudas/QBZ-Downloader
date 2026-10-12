@@ -4,6 +4,7 @@ import { useLanguage } from '../contexts/LanguageContext';
 import { useNavigation } from '../contexts/NavigationContext';
 import { useLatestRequest } from '../hooks/useLatestRequest';
 import { appendPage } from '../utils/lists';
+import { activationProps } from '../utils/a11y';
 import { AlbumGrid } from './AlbumGrid';
 import { FavoriteButton } from './FavoriteButton';
 import { Icons } from './Icons';
@@ -79,12 +80,8 @@ export const SimilarArtistsRow: React.FC<SimilarArtistsProps> = ({ artistId, fal
                     return (
                         <div
                             key={id}
-                            role="button"
-                            tabIndex={0}
-                            onClick={() => navigate('artist', { id })}
-                            onKeyDown={(e) => {
-                                if (e.key === 'Enter') navigate('artist', { id });
-                            }}
+                            // Keys pressed on the inner heart button only toggle the favorite.
+                            {...activationProps(() => navigate('artist', { id }), name)}
                             style={{ width: 120, flexShrink: 0, cursor: 'pointer', textAlign: 'center' }}
                         >
                             {picture ? (

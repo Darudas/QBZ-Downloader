@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DiscoverView } from '../DiscoverView';
 import { PurchasesView } from '../PurchasesView';
 import { LabelView } from '../LabelView';
-import { ArtistDiscography } from '../ArtistSections';
+import { ArtistDiscography, SimilarArtistsRow } from '../ArtistSections';
+import { AlbumGrid } from '../AlbumGrid';
 import { useFavoritesStore } from '../../stores/favoritesStore';
 import { mockFetchRoutes } from '../../test-utils/fetchRoutes';
 
@@ -351,5 +352,47 @@ describe('overlapping pages', () => {
         expect(screen.getAllByText('Shared Album')).toHaveLength(1);
         expect(errors.mock.calls.some((call) => String(call[0]).includes('same key'))).toBe(false);
         errors.mockRestore();
+    });
+});
+
+describe('keyboard access', () => {
+    it('opens a similar artist with Enter, but Enter on its heart only toggles the favorite', async () => {
+        const calls = mockFetchRoutes({
+            'GET /api/artist/1/similar': () => page([{ id: 8, name: 'Neighbour' }]),
+            'GET /api/favorites/ids': favoriteIds,
+            'POST /api/favorites': () => ({ action: 'add' })
+        });
+        render(<SimilarArtistsRow artistId="1" />);
+        const card = await screen.findByRole('button', { name: 'Neighbour' });
+        const heart = within(card).getByRole('button', { name: 'action_favorite' });
+
+        fireEvent.keyDown(heart, { key: 'Enter' });
+        expect(mocks.navigate).not.toHaveBeenCalled();
+        fireEvent.click(heart);
+        await waitFor(() => expect(calls.some((c) => c.method === 'POST')).toBe(true));
+        expect(mocks.navigate).not.toHaveBeenCalled();
+
+        fireEvent.keyDown(card, { key: 'Enter' });
+        expect(mocks.navigate).toHaveBeenCalledWith('artist', { id: '8' });
+    });
+
+    it('opens an album card with Enter or Space and ignores keys on its buttons', () => {
+        render(<AlbumGrid albums={[{ id: 'g1', title: 'Grid Album' }]} />);
+        const card = screen.getByRole('button', { name: 'Grid Album' });
+        expect(card).toHaveAttribute('tabindex', '0');
+        fireEvent.keyDown(within(card).getByLabelText('action_download'), { key: 'Enter' });
+        expect(mocks.navigate).not.toHaveBeenCalled();
+        fireEvent.keyDown(card, { key: ' ' });
+        expect(mocks.navigate).toHaveBeenCalledWith('album', { id: 'g1' });
+    });
+
+    it('opens a purchase row from the keyboard', async () => {
+        mockFetchRoutes({
+            'GET /api/purchases': () => page([{ id: 'p1', title: 'Bought One', artist: { name: 'Band' } }]),
+            'GET /api/favorites/ids': favoriteIds
+        });
+        render(<PurchasesView />);
+        fireEvent.keyDown(await screen.findByRole('button', { name: 'Bought One' }), { key: 'Enter' });
+        expect(mocks.navigate).toHaveBeenCalledWith('album', { id: 'p1' });
     });
 });

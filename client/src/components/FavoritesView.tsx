@@ -7,6 +7,7 @@ import { useQueueActions } from '../hooks/useQueueActions';
 import { useFavoritesStore } from '../stores/favoritesStore';
 import { useLatestRequest } from '../hooks/useLatestRequest';
 import { appendPage } from '../utils/lists';
+import { activationProps } from '../utils/a11y';
 import { FavoriteButton } from './FavoriteButton';
 import { AddToPlaylistModal } from './AddToPlaylistModal';
 import { ConfirmModal } from './Modals';
@@ -216,12 +217,13 @@ export const FavoritesView: React.FC = () => {
                     const cover = coverOf(item);
                     const subtitle =
                         tab === 'tracks' ? [artistName, item.album?.title].filter(Boolean).join(' • ') : artistName;
+                    const openable = tab !== 'tracks' || Boolean(item.album?.id);
                     return (
                         <div
                             key={id}
                             className="track-item"
-                            onClick={() => openItem(item)}
-                            style={{ cursor: 'pointer', padding: '10px 16px', borderRadius: 8 }}
+                            {...(openable ? activationProps(() => openItem(item), title) : {})}
+                            style={{ cursor: openable ? 'pointer' : 'default', padding: '10px 16px', borderRadius: 8 }}
                         >
                             <div style={{ display: 'flex', alignItems: 'center', gap: 16, flex: 1, minWidth: 0 }}>
                                 {cover ? (

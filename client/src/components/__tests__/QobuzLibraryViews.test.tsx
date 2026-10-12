@@ -67,6 +67,19 @@ describe('FavoritesView', () => {
         expect(mocks.navigate).toHaveBeenCalledWith('album', { id: 'a1' });
     });
 
+    it('opens a favorite row from the keyboard', async () => {
+        mockFetchRoutes({
+            'GET /api/favorites/ids': () => ({ albums: ['a1', 'a2'], tracks: [], artists: [] }),
+            'GET /api/favorites': () => page(albums)
+        });
+        render(<FavoritesView />);
+        const row = await screen.findByRole('button', { name: 'Second Album' });
+        fireEvent.keyDown(within(row).getByLabelText('action_download'), { key: ' ' });
+        expect(mocks.navigate).not.toHaveBeenCalled();
+        fireEvent.keyDown(row, { key: ' ' });
+        expect(mocks.navigate).toHaveBeenCalledWith('album', { id: 'a2' });
+    });
+
     it('drops an item from the list when its heart is clicked', async () => {
         const calls = mockFetchRoutes({
             'GET /api/favorites/ids': () => ({ albums: ['a1', 'a2'], tracks: [], artists: [] }),
@@ -178,6 +191,16 @@ describe('AddToPlaylistModal', () => {
         fireEvent.click(screen.getByRole('button', { name: /action_create/ }));
         await waitFor(() => expect(calls.some((c) => c.method === 'POST')).toBe(true));
         expect(calls.find((c) => c.method === 'POST')?.body).toEqual({ name: 'Fresh', isPublic: false, albumId: 'abc' });
+    });
+
+    it('focuses the name field and closes on Escape', async () => {
+        mockFetchRoutes({ 'GET /api/me/playlists': () => page([]) });
+        const onClose = vi.fn();
+        render(<AddToPlaylistModal isOpen onClose={onClose} trackIds={['5']} />);
+        expect(screen.getByLabelText('placeholder_new_playlist')).toHaveFocus();
+        fireEvent.keyDown(document, { key: 'Escape' });
+        expect(onClose).toHaveBeenCalledTimes(1);
+        await screen.findByText('msg_no_own_playlists');
     });
 
     it('renders nothing when closed', () => {
