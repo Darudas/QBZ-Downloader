@@ -141,10 +141,10 @@ export function countTracksForFilter(filter: SmartPlaylistFilter): number {
     return row.count;
 }
 
-export function tracksForFilter(filter: SmartPlaylistFilter, limit = 500): DbTrack[] {
+export function tracksForFilter(filter: SmartPlaylistFilter, limit = 500, offset = 0): DbTrack[] {
     const db = databaseService.getDb();
     const { sql, params } = buildTrackFilterSql(filter);
     return db
-        .prepare(`SELECT * FROM tracks ${sql} ORDER BY downloaded_at DESC LIMIT ?`)
-        .all(...params, limit) as DbTrack[];
+        .prepare(`SELECT * FROM tracks ${sql} ORDER BY downloaded_at DESC LIMIT ? OFFSET ?`)
+        .all(...params, limit, offset) as DbTrack[];
 }

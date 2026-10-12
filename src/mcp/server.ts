@@ -11,18 +11,29 @@ import {
     type PageResult
 } from '../services/qobuz-library/mappers.js';
 import { downloadActionsService } from '../services/download-actions.js';
-import { downloadFavorites } from '../services/favorites-download.js';
-import { downloadQueue } from '../services/queue/queue.js';
+import { downloadFavorites, downloadPurchases } from '../services/favorites-download.js';
+import { favoritesSyncService } from '../services/favorites-sync.js';
+import { downloadTrackLyrics, getTrackLyrics } from '../services/lyrics-actions.js';
+import { notificationService } from '../services/notifications.js';
+import {
+    countTracksForFilter,
+    createSmartPlaylist,
+    deleteSmartPlaylist,
+    getSmartPlaylist,
+    listSmartPlaylists,
+    parseSmartPlaylistFilter,
+    sanitizeSmartPlaylistFilter,
+    tracksForFilter
+} from '../services/smart-playlists.js';
 import { databaseService } from '../services/database/index.js';
 import { historyService } from '../services/history.js';
 import { libraryScannerService } from '../services/library-scanner/index.js';
 import { playlistWatcherService } from '../services/PlaylistWatcherService.js';
-import { validateEnvironment } from '../utils/env.js';
 import { isPathWithinManagedRoots } from '../utils/paths.js';
 import { queueLibraryUpgrade } from '../services/library-upgrade.js';
 import { retagFileFromQobuz } from '../services/metadata-repair.js';
 import fs from 'fs';
-import { ForbiddenError, NotFoundError, toSafeErrorPayload } from '../utils/errors.js';
+import { ForbiddenError, NotFoundError, toSafeErrorPayload, ValidationError } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 import {
     APP_VERSION,
@@ -34,6 +45,7 @@ import {
     QOBUZ_SEARCH_TYPES
 } from '../constants.js';
 import type { McpPermissionGroup } from './token.js';
+import { getAppStatus, registerPrompts, registerResources } from './resources.js';
 
 /* ------------------------------------------------------------------ */
 /* Shared input schemas (defined once; servers are built per request)  */
@@ -50,9 +62,14 @@ const quality = z
     .describe('5=MP3 320, 6=FLAC 16/44.1, 7=FLAC 24/<=96kHz, 27=FLAC 24/<=192kHz (max). Default: app setting');
 const idList = z.array(numericId).max(500);
 const confirm = z.literal(true).describe('Must be true: confirms this destructive action');
+const queueItemId = z.string().min(1).max(100).describe('Queue item id from get_queue');
+const trackId = numericId.describe('Qobuz track id (integer)');
+const playlistId = numericId.describe('Qobuz playlist id (integer)');
+const smartPlaylistId = z.string().trim().min(1).max(64).describe('Smart playlist id from list_smart_playlists');
 
 const READ = { readOnlyHint: true, openWorldHint: true, idempotentHint: true } as const;
 const READ_LOCAL = { readOnlyHint: true, openWorldHint: false, idempotentHint: true } as const;
+const WRITE_LOCAL = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false } as const;
 const WRITE = { readOnlyHint: false, destructiveHint: false, openWorldHint: true } as const;
 const WRITE_IDEMPOTENT = { ...WRITE, idempotentHint: true } as const;
 const DESTRUCTIVE = { readOnlyHint: false, destructiveHint: true, openWorldHint: true } as const;
@@ -82,6 +99,12 @@ function ok(data: unknown): CallToolResult {
     };
 }
 
+/** Caps untrusted third-party text (titles, messages, lyrics) before it reaches the model. */
+function cap(value: unknown, max: number): string {
+    const text = typeof value === 'string' ? value : value === undefined || value === null ? '' : String(value);
+    return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
 function mapPage<T, U>(page: PageResult<T>, mapper: (item: T) => U): PageResult<U> {
     return { ...page, items: page.items.map(mapper) };
 }
@@ -97,6 +120,20 @@ function sliceItems<T>(items: T[] | undefined, total: number | undefined, off: n
     return { items: list, total: count, offset: off, limit: lim, has_more: off + list.length < count };
 }
 
+const MAX_LYRICS_CHARS = 20_000;
+
+/** Smart playlist filter in the tools' snake_case shape. */
+function smartFilterOut(filter: ReturnType<typeof parseSmartPlaylistFilter>): Record<string, unknown> {
+    if (!filter) return {};
+    return {
+        ...(filter.q ? { query: filter.q } : {}),
+        ...(filter.genre ? { genre: filter.genre } : {}),
+        ...(filter.artist ? { artist: filter.artist } : {}),
+        ...(filter.album ? { album: filter.album } : {}),
+        ...(filter.minQuality !== undefined ? { min_quality: filter.minQuality } : {})
+    };
+}
+
 /** Builds a fresh MCP server exposing only the tools of the allowed groups. */
 export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpServer {
     const server = new McpServer(
@@ -104,6 +141,8 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         { instructions: INSTRUCTIONS }
     );
     const allowed = new Set<McpPermissionGroup>(['read', ...groups]);
+    registerResources(server);
+    registerPrompts(server, allowed);
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const tool = <S extends z.ZodObject<any>>(
@@ -133,16 +172,12 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
 
     tool('get_status', 'read', {
         title: 'App status',
-        description: 'Version, whether Qobuz credentials are configured, queue statistics and library scan state.',
+        description:
+            'Version, whether Qobuz credentials are configured, queue statistics, library scan state and the ' +
+            'favorites auto-download schedule.',
         inputSchema: z.object({}),
         annotations: READ_LOCAL
-    }, () => ({
-        version: APP_VERSION,
-        credentials_configured: validateEnvironment(false).valid,
-        queue: downloadQueue.getStats(),
-        queue_paused: downloadQueue.isPaused(),
-        scan_in_progress: libraryScannerService.isScanInProgress()
-    }));
+    }, () => getAppStatus());
 
     tool('get_account_info', 'read', {
         title: 'Qobuz account',
@@ -354,6 +389,118 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
                 downloaded_at: r.downloadedAt
             }))
         };
+    });
+
+    tool('get_queue_item', 'read', {
+        title: 'Queue item',
+        description: 'One download queue item with status, progress and position.',
+        inputSchema: z.object({ id: queueItemId }),
+        annotations: READ_LOCAL
+    }, ({ id }) => {
+        const item = downloadActionsService.getQueueItem(id);
+        if (!item) throw new NotFoundError('Queue item not found');
+        return item;
+    });
+
+    tool('get_lyrics', 'read', {
+        title: 'Lyrics',
+        description:
+            'Lyrics of a track: the saved .lrc file when the track was downloaded, otherwise a lookup on the lyrics ' +
+            'providers. Plain text is preferred; synced=true means time-stamped LRC.',
+        inputSchema: z.object({ track_id: trackId }),
+        annotations: READ
+    }, async ({ track_id }) => {
+        const lyrics = await getTrackLyrics(String(track_id));
+        if (!lyrics.success) return { track_id: String(track_id), found: false };
+        const synced = lyrics.syncedLyrics || lyrics.synced || '';
+        const text = lyrics.plainLyrics || synced;
+        return {
+            track_id: String(track_id),
+            found: Boolean(text) || Boolean(lyrics.instrumental),
+            source: lyrics.source ?? null,
+            synced: !lyrics.plainLyrics && Boolean(synced),
+            instrumental: Boolean(lyrics.instrumental),
+            lyrics: cap(text, MAX_LYRICS_CHARS),
+            truncated: text.length > MAX_LYRICS_CHARS
+        };
+    });
+
+    tool('list_notifications', 'read', {
+        title: 'Notifications',
+        description: 'App notifications (download finished/failed, sync results), newest first.',
+        inputSchema: z.object({
+            unread_only: z.boolean().default(false).describe('Only notifications not yet marked read'),
+            limit: limit(25),
+            offset
+        }),
+        annotations: READ_LOCAL
+    }, ({ unread_only, limit: lim, offset: off }) => {
+        const all = unread_only ? notificationService.getUnread() : notificationService.getAll();
+        const items = all.slice(off, off + lim).map((n) => ({
+            id: n.id,
+            type: n.type,
+            title: cap(n.title, 200),
+            message: cap(n.message, 1000),
+            timestamp: new Date(n.timestamp).toISOString(),
+            read: n.read
+        }));
+        return { ...sliceItems(items, all.length, off, lim), unread_count: notificationService.getUnreadCount() };
+    });
+
+    tool('list_watched_playlists', 'read', {
+        title: 'Watched playlists',
+        description: 'Qobuz playlists that are checked on an interval for new tracks (see watch_playlist).',
+        inputSchema: z.object({ limit: limit(25), offset }),
+        annotations: READ_LOCAL
+    }, ({ limit: lim, offset: off }) => {
+        const all = playlistWatcherService.list();
+        const items = all.slice(off, off + lim).map((p) => ({
+            playlist_id: p.playlistId,
+            title: cap(p.title, 200),
+            quality: p.quality,
+            interval_hours: p.intervalHours,
+            last_synced_at: p.lastSyncedAt,
+            next_sync_at: p.nextSyncAt
+        }));
+        return sliceItems(items, all.length, off, lim);
+    });
+
+    tool('list_smart_playlists', 'read', {
+        title: 'Smart playlists',
+        description: 'Saved filters over the local library (downloaded tracks), with their track counts.',
+        inputSchema: z.object({ limit: limit(25), offset }),
+        annotations: READ_LOCAL
+    }, ({ limit: lim, offset: off }) => {
+        const all = listSmartPlaylists();
+        const items = all.slice(off, off + lim).map((p) => ({
+            id: p.id,
+            name: p.name,
+            filter: smartFilterOut(parseSmartPlaylistFilter(p)),
+            track_count: p.track_count,
+            created_at: p.created_at
+        }));
+        return sliceItems(items, all.length, off, lim);
+    });
+
+    tool('get_smart_playlist_tracks', 'read', {
+        title: 'Smart playlist tracks',
+        description: 'Downloaded tracks matching a smart playlist, newest first.',
+        inputSchema: z.object({ id: smartPlaylistId, limit: limit(50), offset }),
+        annotations: READ_LOCAL
+    }, ({ id, limit: lim, offset: off }) => {
+        const playlist = getSmartPlaylist(id);
+        const filter = parseSmartPlaylistFilter(playlist);
+        if (!playlist || !filter) throw new NotFoundError('Smart playlist not found');
+        const items = tracksForFilter(filter, lim, off).map((t) => ({
+            track_id: t.id,
+            title: t.title,
+            artist: t.artist,
+            album: t.album,
+            album_id: t.album_id,
+            quality: t.quality,
+            file_path: t.file_path
+        }));
+        return { name: playlist.name, ...sliceItems(items, countTracksForFilter(filter), off, lim) };
     });
 
     tool('get_scan_status', 'read', {
@@ -593,6 +740,17 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         annotations: WRITE_IDEMPOTENT
     }, ({ type, quality: q }) => downloadFavorites(type, q, 'mcp'));
 
+    tool('download_purchases', 'download', {
+        title: 'Download purchases',
+        description:
+            'Queue all albums and/or tracks bought on Qobuz (up to 2000 each). Tracks already in the library are skipped.',
+        inputSchema: z.object({
+            type: z.enum(['albums', 'tracks', 'all']).default('all').describe('Which purchases to download'),
+            quality
+        }),
+        annotations: WRITE_IDEMPOTENT
+    }, ({ type, quality: q }) => downloadPurchases(type, q, 'mcp'));
+
     tool('control_queue', 'download', {
         title: 'Control queue',
         description: 'Pause or resume the queue, clear completed items, or retry all failed items.',
@@ -608,23 +766,44 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
     tool('cancel_queue_item', 'download', {
         title: 'Cancel download',
         description: 'Cancel a queued or running download.',
-        inputSchema: z.object({ id: z.string().min(1).max(100).describe('Queue item id from get_queue') }),
+        inputSchema: z.object({ id: queueItemId }),
         annotations: WRITE_IDEMPOTENT
     }, ({ id }) => downloadActionsService.cancel(id));
 
     tool('retry_queue_item', 'download', {
         title: 'Retry download',
         description: 'Retry a failed or cancelled queue item.',
-        inputSchema: z.object({ id: z.string().min(1).max(100) }),
+        inputSchema: z.object({ id: queueItemId }),
         annotations: WRITE_IDEMPOTENT
     }, ({ id }) => downloadActionsService.retry(id));
 
     tool('set_queue_priority', 'download', {
         title: 'Set priority',
         description: 'Change the priority of a pending queue item.',
-        inputSchema: z.object({ id: z.string().min(1).max(100), priority: z.enum(['low', 'normal', 'high']) }),
+        inputSchema: z.object({
+            id: queueItemId,
+            priority: z.enum(['low', 'normal', 'high']).describe('New priority')
+        }),
         annotations: WRITE_IDEMPOTENT
     }, ({ id, priority }) => downloadActionsService.setPriority(id, priority));
+
+    tool('download_lyrics', 'download', {
+        title: 'Download lyrics',
+        description:
+            'Fetch lyrics for a track and save them as an .lrc file next to the downloaded track ' +
+            '(saved=false when the track is not in the library).',
+        inputSchema: z.object({ track_id: trackId }),
+        annotations: WRITE_IDEMPOTENT
+    }, async ({ track_id }) => {
+        const { lyrics, saved } = await downloadTrackLyrics(String(track_id));
+        return {
+            track_id: String(track_id),
+            found: true,
+            source: lyrics.source ?? null,
+            synced: Boolean(lyrics.syncedLyrics),
+            saved
+        };
+    });
 
     /* --------------------------- manage --------------------------- */
 
@@ -659,6 +838,87 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         annotations: WRITE_IDEMPOTENT
     }, ({ playlist_id }) => playlistWatcherService.syncNow(playlist_id));
 
+    tool('unwatch_playlist', 'manage', {
+        title: 'Stop watching playlist',
+        description: 'Stop checking a watched Qobuz playlist for new tracks. Downloaded files are kept.',
+        inputSchema: z.object({ playlist_id: playlistId }),
+        annotations: WRITE_LOCAL
+    }, ({ playlist_id }) => {
+        if (!playlistWatcherService.unwatch(playlist_id)) throw new NotFoundError('Playlist is not being watched');
+        return { unwatched: true, playlist_id: String(playlist_id) };
+    });
+
+    tool('sync_favorites_now', 'manage', {
+        title: 'Sync favorites now',
+        description:
+            'Check the Qobuz favorites now and queue those added since the last check (types from the favorites ' +
+            'auto-download setting). The first check only records a baseline and downloads nothing.',
+        inputSchema: z.object({}),
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
+    }, () => favoritesSyncService.syncNow());
+
+    tool('create_smart_playlist', 'manage', {
+        title: 'Create smart playlist',
+        description: 'Save a filter over the local library as a smart playlist. At least one condition is required.',
+        inputSchema: z.object({
+            name: z.string().trim().min(1).max(100).describe('Playlist name'),
+            filter: z
+                .object({
+                    query: z.string().max(200).optional().describe('Text in title, artist or album'),
+                    genre: z.string().max(100).optional().describe('Exact genre'),
+                    artist: z.string().max(200).optional().describe('Text in the artist name'),
+                    album: z.string().max(200).optional().describe('Text in the album title'),
+                    min_quality: z
+                        .union([z.literal(5), z.literal(6), z.literal(7), z.literal(27)])
+                        .optional()
+                        .describe('Minimum quality code (5, 6, 7, 27)')
+                })
+                .describe('Filter conditions (combined with AND)')
+        }),
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false }
+    }, ({ name, filter }) => {
+        const clean = sanitizeSmartPlaylistFilter({
+            q: filter.query,
+            genre: filter.genre,
+            artist: filter.artist,
+            album: filter.album,
+            minQuality: filter.min_quality
+        });
+        if (!clean) throw new ValidationError('At least one filter condition is required');
+        const created = createSmartPlaylist(name, clean);
+        return {
+            id: created.id,
+            name: created.name,
+            filter: smartFilterOut(clean),
+            track_count: countTracksForFilter(clean)
+        };
+    });
+
+    tool('delete_smart_playlist', 'manage', {
+        title: 'Delete smart playlist',
+        description: 'Delete a saved smart playlist (only the saved filter; no files are touched).',
+        inputSchema: z.object({ id: smartPlaylistId }),
+        annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false }
+    }, ({ id }) => {
+        if (!deleteSmartPlaylist(id)) throw new NotFoundError('Smart playlist not found');
+        return { deleted: true, id };
+    });
+
+    tool('mark_notifications_read', 'manage', {
+        title: 'Mark notifications read',
+        description: 'Mark the given notifications, or all of them (all=true), as read.',
+        inputSchema: z.object({
+            ids: z.array(z.string().min(1).max(100)).max(100).optional().describe('Notification ids from list_notifications'),
+            all: z.boolean().default(false).describe('Mark every notification as read')
+        }),
+        annotations: WRITE_LOCAL
+    }, ({ ids, all }) => {
+        if (all) return { marked: notificationService.markAllAsRead() };
+        if (!ids || ids.length === 0) throw new ValidationError('Provide ids or all=true');
+        const notFound = ids.filter((id) => !notificationService.markAsRead(id));
+        return { marked: ids.length - notFound.length, not_found: notFound };
+    });
+
     tool('queue_upgrade', 'manage', {
         title: 'Upgrade a local file',
         description:
@@ -688,6 +948,28 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         inputSchema: z.object({ playlist_id: numericId, confirm }),
         annotations: DESTRUCTIVE
     }, ({ playlist_id }) => qobuzLibraryService.deletePlaylist(playlist_id));
+
+    tool('clear_download_history', 'destructive', {
+        title: 'Clear download history',
+        description:
+            'Delete the whole download history. Downloaded files stay on disk, but the history no longer lists them.',
+        inputSchema: z.object({ confirm }),
+        annotations: { ...DESTRUCTIVE, idempotentHint: true, openWorldHint: false }
+    }, () => {
+        const count = historyService.count();
+        historyService.clearAll();
+        return { cleared: count };
+    });
+
+    tool('remove_history_entry', 'destructive', {
+        title: 'Remove history entry',
+        description: 'Delete one track from the download history. The file stays on disk.',
+        inputSchema: z.object({ track_id: trackId, confirm }),
+        annotations: { ...DESTRUCTIVE, idempotentHint: true, openWorldHint: false }
+    }, ({ track_id }) => {
+        if (!historyService.remove(track_id)) throw new NotFoundError('History entry not found');
+        return { removed: true, track_id: String(track_id) };
+    });
 
     tool('clear_pending_queue', 'destructive', {
         title: 'Clear pending downloads',
