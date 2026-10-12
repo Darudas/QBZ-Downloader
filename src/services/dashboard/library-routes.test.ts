@@ -13,6 +13,13 @@ vi.mock('../library-lookup.js', () => ({
     MAX_LOOKUP_TRACK_IDS: 500,
     MAX_LOOKUP_ALBUM_IDS: 50
 }));
+const actions = vi.hoisted(() => ({
+    resolveDuplicate: vi.fn(),
+    editTrackMetadata: vi.fn(),
+    deleteLibraryFile: vi.fn(),
+    queueUpgrade: vi.fn()
+}));
+vi.mock('../library-actions.js', () => actions);
 vi.mock('../database/index.js', () => ({ databaseService: {} }));
 vi.mock('../queue/queue.js', () => ({ downloadQueue: {} }));
 vi.mock('../library-scanner/index.js', () => ({ libraryScannerService: {} }));
@@ -89,5 +96,65 @@ describe('GET /api/library/lookup', () => {
             expect(res.status).toBe(400);
         }
         expect(lookup.checkTracks).not.toHaveBeenCalled();
+    });
+});
+
+describe('library actions routes', () => {
+    beforeEach(() => vi.clearAllMocks());
+
+    it('POST /duplicates/:id/resolve forwards keep/dryRun and maps errors to JSON', async () => {
+        actions.resolveDuplicate.mockResolvedValueOnce({ id: 4, resolved: true, deleted: true, deletedFile: '/music/b.flac' });
+        const ok = await request(app).post('/api/library/duplicates/4/resolve');
+        expect(ok.status).toBe(200);
+        expect(ok.body).toMatchObject({ success: true, deleted: true, deletedFile: '/music/b.flac' });
+        expect(actions.resolveDuplicate).toHaveBeenCalledWith(4, { keep: 'auto', dryRun: false });
+
+        actions.resolveDuplicate.mockResolvedValueOnce({ id: 4, resolved: false, deleted: false, dryRun: true });
+        await request(app).post('/api/library/duplicates/4/resolve').send({ keep: 'first', dryRun: true });
+        expect(actions.resolveDuplicate).toHaveBeenLastCalledWith(4, { keep: 'first', dryRun: true });
+
+        const { NotFoundError, ForbiddenError } = await import('../../utils/errors.js');
+        actions.resolveDuplicate.mockRejectedValueOnce(new NotFoundError('Duplicate record not found'));
+        const missing = await request(app).post('/api/library/duplicates/5/resolve');
+        expect(missing.status).toBe(404);
+        expect(missing.body.error).toBe('Duplicate record not found');
+        actions.resolveDuplicate.mockRejectedValueOnce(new ForbiddenError('outside'));
+        expect((await request(app).post('/api/library/duplicates/5/resolve')).status).toBe(403);
+
+        expect((await request(app).post('/api/library/duplicates/abc/resolve')).status).toBe(400);
+        expect((await request(app).post('/api/library/duplicates/1/resolve').send({ keep: 'both' })).status).toBe(400);
+    });
+
+    it('POST /metadata/edit accepts fields (or the legacy metadata key)', async () => {
+        actions.editTrackMetadata.mockResolvedValue({ filePath: '/music/a.flac', updated: ['title'] });
+        const res = await request(app)
+            .post('/api/library/metadata/edit')
+            .send({ filePath: '/music/a.flac', fields: { title: 'New' } });
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ success: true, filePath: '/music/a.flac', updated: ['title'] });
+        expect(actions.editTrackMetadata).toHaveBeenCalledWith('/music/a.flac', { title: 'New' });
+
+        await request(app).post('/api/library/metadata/edit').send({ filePath: '/music/a.flac', metadata: { genre: 'Jazz' } });
+        expect(actions.editTrackMetadata).toHaveBeenLastCalledWith('/music/a.flac', { genre: 'Jazz' });
+
+        expect((await request(app).post('/api/library/metadata/edit').send({ filePath: '/music/a.flac' })).status).toBe(400);
+        expect((await request(app).post('/api/library/metadata/edit').send({ fields: { title: 'x' } })).status).toBe(400);
+    });
+
+    it('DELETE /file takes a path or a library file id', async () => {
+        actions.deleteLibraryFile.mockReturnValue({ filePath: '/music/a.flac', deleted: true, removedRows: { libraryFiles: 1, tracks: 0 } });
+        const res = await request(app).delete('/api/library/file').send({ filePath: '/music/a.flac' });
+        expect(res.status).toBe(200);
+        expect(res.body).toMatchObject({ success: true, deleted: true });
+        await request(app).delete('/api/library/file').send({ libraryFileId: 7 });
+        expect(actions.deleteLibraryFile).toHaveBeenLastCalledWith({ libraryFileId: 7 });
+        expect((await request(app).delete('/api/library/file').send({})).status).toBe(400);
+    });
+
+    it('POST /upgrade keeps its contract', async () => {
+        actions.queueUpgrade.mockReturnValue({ id: 'q_1' });
+        const res = await request(app).post('/api/library/upgrade').send({ filePath: '/music/a.flac', trackId: '123' });
+        expect(res.body).toEqual({ success: true, item: { id: 'q_1' } });
+        expect((await request(app).post('/api/library/upgrade').send({ filePath: '/music/a.flac' })).status).toBe(400);
     });
 });

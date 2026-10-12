@@ -18,11 +18,10 @@ import { historyService } from '../services/history.js';
 import { libraryScannerService } from '../services/library-scanner/index.js';
 import { playlistWatcherService } from '../services/PlaylistWatcherService.js';
 import { validateEnvironment } from '../utils/env.js';
-import { isPathWithinManagedRoots } from '../utils/paths.js';
-import { queueLibraryUpgrade } from '../services/library-upgrade.js';
+import { queueUpgrade, resolveDuplicate } from '../services/library-actions.js';
 import { retagFileFromQobuz } from '../services/metadata-repair.js';
-import { checkAlbums, checkTracks, searchLocalLibrary } from '../services/library-lookup.js';
-import { ForbiddenError, NotFoundError, toSafeErrorPayload } from '../utils/errors.js';
+import { checkAlbums, checkTracks, isTrackInLibrary, searchLocalLibrary } from '../services/library-lookup.js';
+import { toSafeErrorPayload } from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 import {
     APP_VERSION,
@@ -188,7 +187,7 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         const album = unwrap(await qobuzApi.getAlbum(album_id), 'album');
         const tracks = (album.tracks?.items ?? []).map((t) => ({
             ...toTrackSummary(t),
-            downloaded: databaseService.hasTrack(String(t.id))
+            downloaded: isTrackInLibrary(String(t.id))
         }));
         return { album: toAlbumSummary(album), tracks };
     });
@@ -200,7 +199,7 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         annotations: READ
     }, async ({ track_id }) => {
         const track = unwrap(await qobuzApi.getTrack(track_id), 'track');
-        return { track: toTrackSummary(track), downloaded: databaseService.hasTrack(String(track_id)) };
+        return { track: toTrackSummary(track), downloaded: isTrackInLibrary(String(track_id)) };
     });
 
     tool('get_artist', 'read', {
@@ -637,7 +636,7 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         inputSchema: z.object({ file_path: z.string().min(1).max(4096), track_id: numericId.optional(), quality }),
         annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true }
     }, ({ file_path, track_id, quality: q }) => {
-        const item = queueLibraryUpgrade({ filePath: file_path, trackId: track_id, quality: q });
+        const item = queueUpgrade({ filePath: file_path, trackId: track_id, quality: q });
         return { queued: true, queue_id: item.id, track_id: item.contentId, quality: item.quality };
     });
 
@@ -669,20 +668,16 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
     tool('resolve_duplicate', 'destructive', {
         title: 'Resolve duplicate',
         description:
-            'Delete the worse file of a duplicate pair (keeps higher quality, then larger size). Deletes a file from disk.',
-        inputSchema: z.object({ duplicate_id: z.number().int().positive(), confirm }),
+            'Delete one file of a duplicate pair (see list_duplicates). keep=auto keeps the higher quality, then the larger ' +
+            'file; first/second keep file_1/file_2. dry_run=true only reports what would be deleted. Deletes a file from disk.',
+        inputSchema: z.object({
+            duplicate_id: z.number().int().positive(),
+            keep: z.enum(['auto', 'first', 'second']).default('auto').describe('Which file to keep'),
+            dry_run: z.boolean().default(false).describe('Only report what would be deleted'),
+            confirm
+        }),
         annotations: { ...DESTRUCTIVE, openWorldHint: false }
-    }, async ({ duplicate_id }) => {
-        const row = databaseService.getDb()
-            .prepare('SELECT file_path_1, file_path_2 FROM duplicates WHERE id = ?')
-            .get(duplicate_id) as { file_path_1: string; file_path_2: string } | undefined;
-        if (!row) throw new NotFoundError('Duplicate not found');
-        // resolveDuplicate deletes without its own containment check.
-        if (!isPathWithinManagedRoots(row.file_path_1) || !isPathWithinManagedRoots(row.file_path_2)) {
-            throw new ForbiddenError('Duplicate files are outside the managed library folders');
-        }
-        return libraryScannerService.resolveDuplicate(duplicate_id);
-    });
+    }, ({ duplicate_id, keep, dry_run }) => resolveDuplicate(duplicate_id, { keep, dryRun: dry_run }));
 
     return server;
 }

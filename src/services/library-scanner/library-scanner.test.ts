@@ -160,61 +160,6 @@ describe('LibraryScannerService', () => {
         });
     });
 
-    describe('Duplicate Resolution', () => {
-        it('should delete the lower-size file when resolving a similar duplicate', async () => {
-            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qbz-duplicate-'));
-            const keepPath = path.join(tempDir, 'keep.flac');
-            const deletePath = path.join(tempDir, 'delete.flac');
-            fs.writeFileSync(keepPath, Buffer.alloc(20));
-            fs.writeFileSync(deletePath, Buffer.alloc(10));
-
-            const run = vi.fn();
-            vi.mocked(databaseService.getDb).mockReturnValue({
-                prepare: vi.fn((query: string) => {
-                    if (query.includes('SELECT * FROM duplicates')) {
-                        return {
-                            get: vi.fn().mockReturnValue({
-                                id: 1,
-                                file_path_1: keepPath,
-                                file_path_2: deletePath,
-                                match_type: 'similar'
-                            })
-                        };
-                    }
-
-                    if (query.includes('SELECT * FROM library_files')) {
-                        return {
-                            get: vi.fn((filePath: string) => {
-                                if (filePath === keepPath) {
-                                    return { file_path: keepPath, quality: 6, file_size: 20 };
-                                }
-                                if (filePath === deletePath) {
-                                    return { file_path: deletePath, quality: 6, file_size: 10 };
-                                }
-                                return undefined;
-                            })
-                        };
-                    }
-
-                    return { run };
-                })
-            } as any);
-
-            try {
-                const result = await scanner.resolveDuplicate(1);
-
-                expect(result.deleted).toBe(true);
-                expect(result.deletedFile).toBe(deletePath);
-                expect(fs.existsSync(deletePath)).toBe(false);
-                expect(fs.existsSync(keepPath)).toBe(true);
-                expect(databaseService.deleteTrackByPath).toHaveBeenCalledWith(deletePath);
-                expect(databaseService.resolveDuplicate).toHaveBeenCalledWith(1);
-            } finally {
-                fs.rmSync(tempDir, { recursive: true, force: true });
-            }
-        });
-    });
-
     describe('Temporary download files', () => {
         it('recognises every staging name the downloader writes', () => {
             expect(isTemporaryDownloadFile('/m/A/01. Song.qbz-part.flac')).toBe(true);

@@ -59,10 +59,16 @@ vi.mock('../utils/paths.js', () => ({ isPathWithinManagedRoots: (p: string) => p
 vi.mock('../services/history.js', () => ({ historyService: {} }));
 vi.mock('../services/library-scanner/index.js', () => ({
     libraryScannerService: {
-        isScanInProgress: () => false,
-        resolveDuplicate: vi.fn().mockResolvedValue({ deleted: '/music/b.flac' })
+        isScanInProgress: () => false
     }
 }));
+const actions = vi.hoisted(() => ({
+    resolveDuplicate: vi.fn(),
+    queueUpgrade: vi.fn()
+}));
+// Containment and deletion are covered by library-actions.test.ts; here only
+// the tool wiring is checked.
+vi.mock('../services/library-actions.js', () => actions);
 vi.mock('../services/PlaylistWatcherService.js', () => ({ playlistWatcherService: {} }));
 vi.mock('../utils/env.js', () => ({ validateEnvironment: () => ({ valid: true }) }));
 
@@ -163,12 +169,22 @@ describe('MCP endpoint', () => {
             albums: { abc1: { status: 'partial', downloaded: 1, total: 2 } }
         });
 
+        actions.resolveDuplicate.mockResolvedValueOnce({ id: 3, resolved: true, deleted: true });
         const ok = await client.callTool({ name: 'resolve_duplicate', arguments: { duplicate_id: 3, confirm: true } });
         expect(ok.isError).toBeFalsy();
-        db.rows.dup = { file_path_1: '/etc/passwd', file_path_2: '/music/b.flac' };
+        expect(actions.resolveDuplicate).toHaveBeenLastCalledWith(3, { keep: 'auto', dryRun: false });
+
+        await client.callTool({
+            name: 'resolve_duplicate',
+            arguments: { duplicate_id: 3, keep: 'second', dry_run: true, confirm: true }
+        });
+        expect(actions.resolveDuplicate).toHaveBeenLastCalledWith(3, { keep: 'second', dryRun: true });
+
+        const { ForbiddenError } = await import('../utils/errors.js');
+        actions.resolveDuplicate.mockRejectedValueOnce(new ForbiddenError('Duplicate files are outside the managed library folders'));
         const refused = await client.callTool({ name: 'resolve_duplicate', arguments: { duplicate_id: 3, confirm: true } });
         expect(refused.isError).toBe(true);
-        db.rows.dup = { file_path_1: '/music/a.flac', file_path_2: '/music/b.flac' };
+        expect(JSON.stringify(refused.content)).toContain('outside the managed library folders');
         await client.close();
     });
 });
