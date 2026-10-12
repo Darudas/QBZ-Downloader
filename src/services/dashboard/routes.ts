@@ -7,12 +7,14 @@ import analyticsRouter from './routers/analytics.routes.js';
 import notificationsRouter from './routers/notifications.routes.js';
 import toolsRouter from './routers/tools.routes.js';
 import batchRouter from './routers/batch.routes.js';
+import qobuzLibraryRouter from './routers/qobuz-library.routes.js';
 
 export function registerRoutes(app: Express) {
     app.use('/api', systemRouter);
     app.use('/api', catalogRouter);
     app.use('/api', downloadRouter);
     app.use('/api', analyticsRouter);
+    app.use('/api', qobuzLibraryRouter);
     app.use('/api/library', libraryRouter);
     app.use('/api/notifications', notificationsRouter);
     app.use('/api/tools', toolsRouter);

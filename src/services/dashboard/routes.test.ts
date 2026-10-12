@@ -226,6 +226,8 @@ vi.mock('../../constants.js', () => ({
     APP_VERSION: '2.0.0'
 }));
 
+vi.mock('../qobuz-library/index.js', () => ({ qobuzLibraryService: {} }));
+
 vi.mock('../FormatConverterService.js', () => ({
     formatConverterService: {
         isAvailable: vi.fn().mockResolvedValue(true),
