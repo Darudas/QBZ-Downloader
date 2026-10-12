@@ -11,7 +11,7 @@ This document is the working plan for two connected features:
 It also records security problems found in the existing code that had to be fixed before an AI is
 allowed to control the app.
 
-> **Status (current branch):** the MCP server (B2: 64 tools, resources, prompts, Host check, bridge
+> **Status (current branch):** the MCP server (B2: 70 tools, resources, prompts, Host check, bridge
 > end-to-end test) and the favorites auto-download are implemented, tested and documented in
 > [`docs/mcp.md`](mcp.md); phase A is partly done. The Qobuz API layer, the Qobuz library service and
 > the queue/download safety work are implemented and tested; everything else below is planned. See
@@ -49,7 +49,7 @@ These are fixed; later phases build on them.
   1. its own rate limiter;
   2. the enabled check;
   3. bearer auth, returning 401 with `WWW-Authenticate: Bearer realm="qbz-mcp"`, with an auth-failure
-     limiter;
+     limiter that counts only 401s (requests with a valid token are skipped);
   4. a 1 MB JSON parser that returns JSON-RPC `-32700` on bad input;
   5. the handler.
 
@@ -61,7 +61,7 @@ These are fixed; later phases build on them.
 | `read` | All read-only tools | always on |
 | `library` | Reversible Qobuz account writes: favorites, create/update playlists, add/remove playlist tracks, follow/unfollow | on |
 | `download` | Enqueue downloads, queue control, lyrics | on |
-| `manage` | Scans, watched/smart playlists, metadata edits, safe settings, notifications, favorites sync | on |
+| `manage` | Scans, watched/smart playlists, metadata edits, safe settings, notifications, favorites sync, Hi-Res upgrades (`queue_upgrade` and `retag_file_from_qobuz` require `confirm: true`) | on |
 | `destructive` | Delete a Qobuz playlist, resolve a duplicate (deletes a file), delete a library file, clear history, clear the pending queue | **off**; every call additionally requires `confirm: true` |
 
 - **Never exposed to the AI:** system reset, Qobuz credentials and accounts, the dashboard password,
@@ -246,14 +246,19 @@ Conventions for every tool:
   aliases). Anything else falls back to the default instead of reaching `getFileUrl`.
 
 **B2: MCP server (done except the items below)**
-- `src/mcp/server.ts`: 64 tools across the groups read/library/download/manage/destructive,
-  registered per request according to `MCP_PERMISSIONS`. Destructive tools need `confirm: true`. The
-  handler wrapper sanitizes errors and audit-logs calls by name.
+- `src/mcp/server.ts`: 70 tools across the groups read (34), library (8), download (9), manage (13) and
+  destructive (6), registered per request according to `MCP_PERMISSIONS`. Destructive tools need
+  `confirm: true`, and so do `queue_upgrade` (deletes the original) and `retag_file_from_qobuz`
+  (overwrites every tag) in `manage`. The handler wrapper sanitizes errors, audit-logs calls by name and
+  logs the sanitized cause of unexpected errors server-side only. Catalog/playlist/release tools return
+  the capped summaries from `qobuz-library/mappers.ts`, never raw Qobuz objects.
   - Added after the core set: `get_queue_item`, `get_lyrics`, `list_notifications`,
     `list_watched_playlists`, `list_smart_playlists`, `get_smart_playlist_tracks` (read);
     `download_purchases`, `download_lyrics` (download); `unwatch_playlist`, `sync_favorites_now`,
     `create_smart_playlist`, `delete_smart_playlist`, `mark_notifications_read` (manage);
     `clear_download_history`, `remove_history_entry` (destructive).
+  - Added later: `get_library_stats` (read), `abort_library_scan`, `edit_track_metadata` (manage),
+    `delete_library_file` (destructive).
 - `src/mcp/resources.ts`: the resources `qbz://status` and `qbz://queue`, and the prompts
   `download_discography(artist)`, `find_hires_upgrades`, `clean_duplicates`, `sync_favorites`,
   `build_playlist(theme)`. A prompt is registered only when the groups of the tools it uses are enabled.
@@ -270,15 +275,14 @@ Conventions for every tool:
 - `src/mcp/bridge.ts` with `"bin": {"qbz-mcp": "dist/mcp/bridge.js"}`. Fixed: the SDK stdio transport
   closes itself when stdin ends, so answers to requests still in flight were dropped (for example
   `echo '{…}' | qbz-mcp`). The bridge now writes stdout itself and exits once in-flight requests are
-  answered (30 s backstop).
+  answered (30 s backstop). A cancelled request is settled once the cancellation is forwarded. The exit
+  code is 1 on startup failures, uncaught errors, an unexpected HTTP close and unanswered requests at
+  the backstop.
 - Tests (`src/mcp/mcp.test.ts`) use a real MCP client over HTTP and cover the 404, 401, foreign-Origin and
-  Host responses, tool gating per group, `confirm`, tool calls, resources and prompts. An end-to-end test
+  Host responses, the auth-failure limiter (only 401s count), tool gating per group, `confirm`, tool
+  calls, resources and prompts. An end-to-end test
   starts the bridge (`node --experimental-strip-types src/mcp/bridge.ts`) against the test server, speaks
   JSON-RPC over stdio (initialize, tools/list, tools/call) and checks that stdout carries only JSON-RPC.
-- **Still open in B2:**
-  - `delete_library_file`: skipped until `libraryActionsService.deleteLibraryFile` exists with a
-    containment check; `edit_track_metadata`, `get_library_stats`, `abort_library_scan` are not
-    implemented yet.
 - **UI:** the MCP section in Settings is done (`McpSettingsSection.tsx`, en/de strings).
 
 **Favorites auto-download (B1, done)**
@@ -287,14 +291,17 @@ Conventions for every tool:
   (1–168, default 6; the schedule survives restarts) and queues favorites of the types in
   `FAVORITES_AUTO_DOWNLOAD_TYPES` that are new since the last check. Checks are skipped without Qobuz
   credentials; settings and credential changes reschedule (`EVENTS.SETTINGS.UPDATED`).
-- Baseline: the first check per Qobuz account and type, and the first check after the setting is switched
-  on, only records the current favorites and downloads nothing. Ids that fail to queue stay unknown and
-  are retried on the next check.
+- Baseline: a check only records the current favorites of a type and downloads nothing for the first
+  check per Qobuz account and type, the first check after the setting is switched on, a type that was not
+  part of the previous check, and a type whose last check is older than two intervals (at least 7 days;
+  `staleBaselineAfterMs`). Ids that fail to queue stay unknown and are retried on the next check. A check
+  is aborted when the Qobuz account changes while it runs. New favorite albums that already have local
+  tracks are queued with their Qobuz track count, so complete ones are skipped.
 - Known ids are stored in two tables created on first use (`favorites_sync_state`,
   `favorites_sync_known`), keyed by Qobuz user id, not in settings: the list can hold thousands of ids,
   and settings are cached, mirrored into `process.env` and exported with the config.
-- The settings are read through `readFavoritesSyncSettings()` (same shape as the planned
-  `CONFIG.favorites`); switch to the getter once it exists.
+- The settings are read from `CONFIG.favorites` (through `readFavoritesSyncSettings()`), the same source
+  as `get_settings`; CONFIG's cache is cleared on `EVENTS.SETTINGS.UPDATED` before the scheduler reacts.
 - REST: `GET /api/favorites/sync` (status), `POST /api/favorites/sync` (check now),
   `POST /api/purchases/download` (`downloadPurchases`, shared with the MCP tool, in
   `src/services/favorites-download.ts`).
@@ -391,8 +398,7 @@ Conventions for every tool:
     genre?, year?, trackNumber?, totalTracks?, discNumber?, totalDiscs?, composer?, label?, isrc?,
     copyright?, comment?}}` (empty string removes a tag; FLAC and MP3 only)
   - `DELETE /api/library/file` body `{filePath}` or `{libraryFileId}` (indexed files only)
-- MCP tools `edit_track_metadata` and `delete_library_file` are not registered yet; the services are
-  ready for them.
+- MCP tools `edit_track_metadata` and `delete_library_file` are registered (manage/destructive).
 
 **B1: REST and services for the library features**
 - Routers:

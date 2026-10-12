@@ -38,15 +38,16 @@ and is never written to the database. You still have to enable MCP with the call
 
 ## 2. Permissions
 
-Tools are grouped. A tool from a disabled group is not offered to the AI at all.
+Tools are grouped. A tool from a disabled group is not offered to the AI at all. There are 70 tools:
+34 `read`, 8 `library`, 9 `download`, 13 `manage` and 6 `destructive`.
 
 | Group | Tools | Default |
 |---|---|---|
-| `read` | `get_status`, `get_account_info`, `search_catalog`, `resolve_qobuz_url`, `get_album`, `get_track`, `get_artist`, `get_artist_releases`, `get_similar_artists`, `get_playlist`, `get_label`, `get_featured_albums`, `get_featured_playlists`, `list_genres`, `get_lyrics`, `list_favorites`, `check_favorites`, `list_my_playlists`, `list_purchases`, `get_queue`, `get_queue_item`, `get_download_history`, `get_scan_status`, `get_library_stats`, `check_in_library`, `search_local_library`, `list_duplicates`, `list_upgrade_candidates`, `list_missing_metadata`, `list_watched_playlists`, `list_smart_playlists`, `get_smart_playlist_tracks`, `list_notifications` , `get_settings` (safe subset: quality, concurrency, cover/lyrics options, favorites auto-download; no credentials, paths or URLs) | always on |
+| `read` | `get_status`, `get_account_info`, `search_catalog`, `resolve_qobuz_url`, `get_album`, `get_track`, `get_artist`, `get_artist_releases`, `get_similar_artists`, `get_playlist`, `get_label`, `get_featured_albums`, `get_featured_playlists`, `list_genres`, `get_lyrics`, `list_favorites`, `check_favorites`, `list_my_playlists`, `list_purchases`, `get_queue`, `get_queue_item`, `get_download_history`, `get_scan_status`, `get_library_stats`, `check_in_library`, `search_local_library`, `list_duplicates`, `list_upgrade_candidates`, `list_missing_metadata`, `list_watched_playlists`, `list_smart_playlists`, `get_smart_playlist_tracks`, `list_notifications`, `get_settings` (safe subset: quality, concurrency, cover/lyrics options, favorites auto-download; no credentials, paths or URLs) | always on |
 | `library` | `add_favorites`, `remove_favorites`, `create_playlist`, `update_playlist`, `add_tracks_to_playlist`, `remove_tracks_from_playlist`, `follow_playlist`, `unfollow_playlist` | on |
 | `download` | `download`, `download_urls`, `download_favorites`, `download_purchases`, `control_queue`, `cancel_queue_item`, `retry_queue_item`, `set_queue_priority`, `download_lyrics` (saves an `.lrc` next to a downloaded track) | on |
-| `manage` | `start_library_scan`, `abort_library_scan`, `edit_track_metadata` (changes single tags of a FLAC/MP3 file, keeps the rest and the cover), `watch_playlist`, `unwatch_playlist`, `sync_watched_playlists`, `sync_favorites_now`, `create_smart_playlist`, `delete_smart_playlist`, `mark_notifications_read`, `queue_upgrade` (replaces the old file after the better one is downloaded), `retag_file_from_qobuz` (rewrites a file's tags and cover from a Qobuz track), `update_settings` (allowlisted fields only) | on |
-| `destructive` | `delete_playlist`, `delete_library_file` (only indexed files inside the library folders), `clear_pending_queue`, `clear_download_history`, `remove_history_entry` (both keep the files on disk), `resolve_duplicate` (deletes the worse file of a pair; refuses files outside the library folders). Each also needs `confirm: true` | **off** |
+| `manage` | `start_library_scan`, `abort_library_scan`, `edit_track_metadata` (changes single tags of a FLAC/MP3 file, keeps the rest and the cover), `watch_playlist`, `unwatch_playlist`, `sync_watched_playlists`, `sync_favorites_now`, `create_smart_playlist`, `delete_smart_playlist`, `mark_notifications_read`, `queue_upgrade` (deletes the old file after the better one is downloaded), `retag_file_from_qobuz` (rewrites all tags of an indexed FLAC/MP3 file from a Qobuz track; keeps the embedded cover unless a new one is fetched), `update_settings` (allowlisted fields only). `queue_upgrade` and `retag_file_from_qobuz` also need `confirm: true` | on |
+| `destructive` | `delete_playlist`, `delete_library_file` (only indexed files inside the library folders; for duplicate pairs use `resolve_duplicate`), `clear_pending_queue`, `clear_download_history`, `remove_history_entry` (both keep the files on disk), `resolve_duplicate` (deletes the worse file of a pair; refuses files outside the library folders). Each also needs `confirm: true` | **off** |
 
 ### Resources and prompts
 
@@ -65,18 +66,31 @@ tools it uses are enabled.
 | `download_discography` | `artist` | `download` |
 | `sync_favorites` | – | `download` |
 | `find_hires_upgrades` | – | `manage` |
-| `clean_duplicates` | – | always; it only reports unless `destructive` is enabled |
+| `clean_duplicates` | – | always; it only reports unless `destructive` is enabled, and only suggests `start_library_scan` with `manage` |
 | `build_playlist` | `theme` | `library` |
 
 ### Favorites auto-download
 
 With the settings `FAVORITES_AUTO_DOWNLOAD=true`, `FAVORITES_AUTO_DOWNLOAD_TYPES` (`albums`, `tracks` or
 both) and `FAVORITES_SYNC_INTERVAL_HOURS` (1–168, default 6), the app checks your Qobuz favorites on that
-interval and queues the ones added since the last check. The first check for an account and type, and
-the first check after the setting is switched on, only records the current favorites as a baseline and
-downloads nothing; use `download_favorites` (or "Download all missing" in the dashboard) for the existing
-list. `sync_favorites_now` (and `POST /api/favorites/sync`) runs a check immediately, even when the
-schedule is off; `GET /api/favorites/sync` shows the last and next check.
+interval and queues the ones added since the last check (albums that already have local tracks are
+queued only when incomplete). A check only records the current favorites of a type as a baseline and
+downloads nothing when:
+
+- it is the first check for the account and type, or the first one after the setting is switched on;
+- the type was not part of the previous check (for example it was removed from
+  `FAVORITES_AUTO_DOWNLOAD_TYPES` and added again);
+- the type's last check is older than two intervals, and at least 7 days (for example auto-download was
+  enabled through the environment after a long pause, or `sync_favorites_now` runs long after the last
+  check). A check delayed by a few days, such as after the app was closed over a weekend, still downloads
+  what was added meanwhile.
+
+Use `download_favorites` (or "Download all missing" in the dashboard) for the existing list.
+`sync_favorites_now` (and `POST /api/favorites/sync`) runs a check immediately, even when the schedule
+is off; `GET /api/favorites/sync` shows the last and next check. A check is aborted if the Qobuz account
+changes while it runs. The settings are read through `CONFIG.favorites`, so `get_settings`, the status
+and the schedule always agree (`FAVORITES_AUTO_DOWNLOAD` must be `true`; the interval is clamped to
+1–168).
 
 To change the enabled groups (`read` is always on):
 
@@ -97,7 +111,8 @@ claude mcp add --transport http qbz http://127.0.0.1:3000/mcp --header "Authoriz
 ```
 
 **Claude Desktop**: `claude_desktop_config.json` only supports stdio, so use the bridge. Build the app
-first with `npm run build`.
+first with `npm run build`. The bridge exits with code 1 when it cannot start, loses the HTTP connection
+or has to give up on unanswered requests after stdin closed (30 s).
 
 ```json
 { "mcpServers": { "qbz": {
@@ -140,14 +155,17 @@ claude.ai web connectors are not supported. They need a public HTTPS endpoint wi
 
 - The token is stored only as a SHA-256 hash in an encrypted setting. It is never mirrored into
   `process.env` and is compared in constant time.
-- `/mcp` has its own rate limit (600 requests per 5 min) and an auth-failure limit (20 per 15 min). It
-  rejects requests carrying a foreign `Origin` and limits bodies to 1 MB.
+- `/mcp` has its own rate limit (600 requests per 5 min) and an auth-failure limit (20 rejected tokens per
+  15 min; requests with a valid token are never counted or blocked by it). It rejects requests carrying a
+  foreign `Origin` and limits bodies to 1 MB.
 - When the server listens on a loopback address, `/mcp` only accepts the `Host` values `localhost`,
   `127.0.0.1` and `[::1]` with the server's port (protection against DNS rebinding). A reverse proxy in
   front of a loopback-bound instance must forward one of these, for example
   `proxy_set_header Host 127.0.0.1:3000;` in nginx.
 - Every tool call is logged by name (`MCP tool <name> ok|error`), never with its arguments.
-- Error messages are sanitized: Qobuz tokens or request internals never reach the AI.
+- Error messages are sanitized: Qobuz tokens or request internals never reach the AI. Unexpected internal
+  errors reach the AI only as a generic message; their sanitized cause is written to the server log.
 - Text that comes from Qobuz (titles, descriptions) or the lyrics providers is data. The server
-  instructions tell the AI not to follow instructions found in it; notifications and lyrics are
-  length-capped.
+  instructions tell the AI not to follow instructions found in it. Catalog, playlist and release results
+  are compact summaries with capped descriptions; notifications, history titles and lyrics are
+  length-capped. `get_account_info` never returns the login or an e-mail address.
