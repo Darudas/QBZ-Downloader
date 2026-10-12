@@ -92,6 +92,35 @@ describe('DownloadService', () => {
         expect(downloadService).toBeDefined();
     });
 
+    describe('buildQobuzLyrics', () => {
+        type LyricsBuilder = { buildQobuzLyrics(track: unknown): Record<string, unknown> | null };
+        const build = (lyrics: unknown) =>
+            (downloadService as unknown as LyricsBuilder).buildQobuzLyrics({ lyrics });
+
+        beforeEach(() => {
+            (mockLyrics as unknown as Record<string, unknown>).parseLrc = vi.fn().mockReturnValue([]);
+            (mockLyrics as unknown as Record<string, unknown>).toSylt = vi.fn().mockReturnValue([]);
+        });
+
+        it('passes the synced LRC text, not a boolean, to the tagger', () => {
+            const result = build({ sync: '[00:01.00] Hello', text: 'Hello' });
+            expect(result?.syncedLyrics).toBe('[00:01.00] Hello');
+            expect(result?.plainLyrics).toBe('Hello');
+            expect(result?.source).toBe('Qobuz');
+        });
+
+        it('keeps plain-only lyrics without a synced value', () => {
+            const result = build({ text: 'Only plain' });
+            expect(result?.syncedLyrics).toBeNull();
+            expect(result?.plainLyrics).toBe('Only plain');
+        });
+
+        it('returns null when Qobuz has no lyrics text', () => {
+            expect(build({ sync: '  ', text: '' })).toBeNull();
+            expect(build(undefined)).toBeNull();
+        });
+    });
+
     describe('sanitizeFilename', () => {
         it('should remove invalid characters', () => {
             expect(downloadService.sanitizeFilename('Test:File?Name')).toBe('TestFileName');

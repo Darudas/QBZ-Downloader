@@ -284,7 +284,7 @@ export interface SearchResults {
 export interface LyricsResult {
     success: boolean;
     source?: string;
-    syncedLyrics?: string | boolean | null;
+    syncedLyrics?: string | null;
     plainLyrics?: string | null;
     parsedLyrics?: unknown[] | null;
     syltFormat?: unknown[] | null;

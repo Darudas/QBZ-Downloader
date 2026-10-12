@@ -236,9 +236,12 @@ export default class DownloadService {
 
         if (!syncedLyrics && !plainLyrics) return null;
 
+        // metadata.ts embeds `syncedLyrics` as the LRC text; a boolean here
+        // used to embed Qobuz lyrics as empty tags.
         return {
             success: true,
-            syncedLyrics: !!syncedLyrics,
+            source: 'Qobuz',
+            syncedLyrics,
             synced: syncedLyrics,
             plainLyrics: plainLyrics || undefined,
             unsynced: plainLyrics,
