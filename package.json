@@ -24,9 +24,9 @@
     "test:coverage": "npx vitest run --coverage",
     "test:smoke": "node tests/electron-smoke.mjs",
     "bundle-binaries": "node scripts/bundle-binaries.cjs",
-    "lint": "eslint src/**/*.ts",
-    "lint:fix": "eslint src/**/*.ts --fix",
-    "format": "prettier --write src/**/*.ts",
+    "lint": "eslint \"src/**/*.ts\"",
+    "lint:fix": "eslint \"src/**/*.ts\" --fix",
+    "format": "prettier --write \"src/**/*.ts\"",
     "docs": "typedoc --out docs src/index.ts",
     "desktop:rebuild": "node scripts/rebuild-electron-native.cjs",
     "desktop:start": "npm run build:full && npm run desktop:rebuild && electron electron/main.cjs",
@@ -68,6 +68,9 @@
     "access": "public"
   },
   "dependencies": {
+    "@modelcontextprotocol/client": "^2.3.1",
+    "@modelcontextprotocol/node": "^2.1.1",
+    "@modelcontextprotocol/server": "^2.3.1",
     "archiver": "^7.0.1",
     "axios": "^1.20.0",
     "better-sqlite3": "^13.0.3",
