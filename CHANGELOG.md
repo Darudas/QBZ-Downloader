@@ -32,6 +32,9 @@ All notable changes to this project will be documented in this file.
   through, and a completed "upgrade" then deleted `metadata.oldFilePath`. Caller metadata is now
   dropped, and an upgrade only deletes a file that is inside the library roots, indexed in
   `library_files`, and not the new file.
+- **Settings could write arbitrary environment variables**: settings are mirrored into
+  `process.env`, so a write of e.g. `QBZ_DESKTOP` would switch off dashboard authentication. Only
+  registered setting keys can be written now.
 - **Invalid quality values** (any number) were passed to Qobuz; only 5, 6, 7 and 27 are accepted now.
 - **Artist downloads did nothing**: they read the wrong response shape, were capped at 50 albums,
   could deadlock on the concurrency limiter, and ran inside the HTTP request. Artists (and now labels)

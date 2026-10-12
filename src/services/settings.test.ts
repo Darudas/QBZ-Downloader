@@ -47,10 +47,10 @@ describe('SettingsService', () => {
 
     it('should set and get a normal setting', () => {
         const emitSpy = vi.spyOn(eventBus, 'emit');
-        settings.set('THEME', 'dark');
-        expect(settings.get('THEME')).toBe('dark');
+        settings.set('UI_THEME', 'dark');
+        expect(settings.get('UI_THEME')).toBe('dark');
         expect(databaseService.getDb().prepare).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO app_settings'));
-        expect(emitSpy).toHaveBeenCalledWith(EVENTS.SETTINGS.UPDATED, { keys: ['THEME'] });
+        expect(emitSpy).toHaveBeenCalledWith(EVENTS.SETTINGS.UPDATED, { keys: ['UI_THEME'] });
     });
 
     it('should encrypt sensitive keys', () => {
@@ -67,22 +67,34 @@ describe('SettingsService', () => {
     it('should handle setMany correctly', () => {
         const emitSpy = vi.spyOn(eventBus, 'emit');
         settings.setMany({
-            'KEY1': 'VAL1',
-            'KEY2': 'VAL2'
+            'UI_THEME': 'VAL1',
+            'UI_ACCENT': 'VAL2'
         });
-        expect(settings.get('KEY1')).toBe('VAL1');
-        expect(settings.get('KEY2')).toBe('VAL2');
-        expect(emitSpy).toHaveBeenCalledWith(EVENTS.SETTINGS.UPDATED, { keys: ['KEY1', 'KEY2'] });
+        expect(settings.get('UI_THEME')).toBe('VAL1');
+        expect(settings.get('UI_ACCENT')).toBe('VAL2');
+        expect(emitSpy).toHaveBeenCalledWith(EVENTS.SETTINGS.UPDATED, { keys: ['UI_THEME', 'UI_ACCENT'] });
+    });
+
+    it('refuses unknown keys so nothing like QBZ_DESKTOP reaches process.env', () => {
+        expect(() => settings.set('QBZ_DESKTOP', '1')).toThrow(/Unknown setting key/);
+        expect(() => settings.setMany({ UI_THEME: 'x', QBZ_FFMPEG_PATH: '/tmp/evil' })).toThrow(/Unknown setting key/);
+        expect(process.env.QBZ_DESKTOP).toBeUndefined();
+        expect(settings.get('UI_THEME')).not.toBe('x');
+    });
+
+    it('never mirrors the MCP token hash into process.env', () => {
+        settings.set('MCP_TOKEN_HASH', 'a'.repeat(64));
+        expect(process.env.MCP_TOKEN_HASH).toBeUndefined();
     });
 
     it('should return many settings at once', () => {
-        settings.set('A', '1');
-        settings.set('B', '2');
-        const many = settings.getMany(['A', 'B', 'C']);
+        settings.set('UI_THEME', '1');
+        settings.set('UI_ACCENT', '2');
+        const many = settings.getMany(['UI_THEME', 'UI_ACCENT', 'UI_LANGUAGE']);
         expect(many).toEqual({
-            'A': '1',
-            'B': '2',
-            'C': undefined
+            'UI_THEME': '1',
+            'UI_ACCENT': '2',
+            'UI_LANGUAGE': undefined
         });
     });
 

@@ -286,8 +286,8 @@ Conventions for every tool:
   - Add the `CONFIG.mcp` and `CONFIG.favorites` getters.
 - `src/services/settings.ts`:
   - Register the new keys.
-  - `set`/`setMany` must refuse unknown keys. Today any key, for example `QBZ_DESKTOP`, ends up in
-    `process.env`, and the desktop auth bypass reads it.
+  - ~~`set`/`setMany` must refuse unknown keys~~ **done**: they throw on any key outside
+    `KNOWN_SETTING_KEYS`, and `MCP_TOKEN_*` is never mirrored to or imported from `process.env`.
   - Do not mirror secret keys into `process.env`.
   - Environment variables must not overwrite `MCP_TOKEN_*`.
 - New `src/services/settings-schema.ts`:

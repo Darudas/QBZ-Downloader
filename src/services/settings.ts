@@ -216,7 +216,18 @@ export class SettingsService {
         }
     }
 
+    /**
+     * Settings are mirrored into process.env, and env vars such as QBZ_DESKTOP
+     * switch off dashboard auth, so only registered keys may ever be written.
+     */
+    private assertKnownKey(key: string): void {
+        if (!(KNOWN_SETTING_KEYS as readonly string[]).includes(key)) {
+            throw new Error(`Unknown setting key: ${key}`);
+        }
+    }
+
     set(key: string, value: string): void {
+        this.assertKnownKey(key);
         this.ensureInitialized();
 
         try {
@@ -241,6 +252,7 @@ export class SettingsService {
     }
 
     setMany(values: Record<string, string>): void {
+        for (const key of Object.keys(values)) this.assertKnownKey(key);
         this.ensureInitialized();
 
         try {
