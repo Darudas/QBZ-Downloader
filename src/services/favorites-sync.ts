@@ -9,20 +9,26 @@ import {
     MAX_FAVORITES_PER_DOWNLOAD,
     queueLibraryIds,
     type LibraryDownloadKind,
+    type LibraryIdItem,
     type LibraryIdsQueueResult
 } from './favorites-download.js';
+import { checkAlbums } from './library-lookup.js';
 import { notificationService } from './notifications.js';
 import { qobuzLibraryService } from './qobuz-library/index.js';
-import { settingsService } from './settings.js';
 
 /**
  * Favorites auto-download: every `intervalHours` the favorite album/track ids
  * of the Qobuz account are compared with the ids seen before, and favorites
  * that are new since the last check are queued for download.
  *
- * Baseline: the first check for an account and type (and the first check
- * after auto-download is switched on) only records the current favorites as
- * known and downloads nothing. Downloading the whole existing list is what
+ * Baseline: a check only records the current favorites of a type as known
+ * and downloads nothing when there is no usable baseline for it: the first
+ * check for an account and type, the first check after auto-download is
+ * switched on, a type that was not part of the previous check (it was added to
+ * the types again), and a type whose last check is older than
+ * {@link staleBaselineAfterMs} (the app or the sync was off for a long time,
+ * for example auto-download enabled through the environment, or a manual
+ * check long after the last one). Downloading the whole existing list is what
  * "Download all favorites" (`downloadFavorites`) is for.
  *
  * Known ids live in two small SQLite tables created on first use (see
@@ -33,13 +39,22 @@ import { settingsService } from './settings.js';
 
 export const FAVORITES_SYNC_SOURCE = 'favorites-sync';
 export const FAVORITES_SYNC_KINDS: readonly LibraryDownloadKind[] = ['albums', 'tracks'];
-export const MIN_FAVORITES_SYNC_INTERVAL_HOURS = 1;
-export const MAX_FAVORITES_SYNC_INTERVAL_HOURS = 168;
 export const DEFAULT_FAVORITES_SYNC_INTERVAL_HOURS = 6;
 /** Delay before a check that is already due when the app starts or the setting changes. */
 export const FAVORITES_SYNC_STARTUP_DELAY_MS = 30_000;
+/** A baseline older than this is never used to download, whatever the interval. */
+export const FAVORITES_SYNC_MIN_STALE_MS = 7 * 24 * 60 * 60 * 1000;
 
 const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * Age after which a type's last check is too old to download "new" favorites
+ * from: two intervals, but at least {@link FAVORITES_SYNC_MIN_STALE_MS}, so a
+ * check delayed by a few days (app closed) still picks up what was added.
+ */
+export function staleBaselineAfterMs(intervalHours: number): number {
+    return Math.max(2 * intervalHours * HOUR_MS, FAVORITES_SYNC_MIN_STALE_MS);
+}
 
 export interface FavoritesSyncSettings {
     autoDownload: boolean;
@@ -48,31 +63,19 @@ export interface FavoritesSyncSettings {
 }
 
 /**
- * Reads the favorites auto-download settings. Same shape as the planned
- * `CONFIG.favorites` getter; switch to it once that exists.
+ * The favorites auto-download settings, from `CONFIG.favorites` so the
+ * scheduler, `get_settings` and the status agree on parsing (env fallback,
+ * booleans, interval clamping). CONFIG's cache is cleared on
+ * `EVENTS.SETTINGS.UPDATED` by a listener registered when config.js loads,
+ * before this service subscribes, so the handler below already reads the new
+ * values.
  */
 export function readFavoritesSyncSettings(): FavoritesSyncSettings {
-    const enabled = String(settingsService.get('FAVORITES_AUTO_DOWNLOAD') ?? '').trim().toLowerCase();
-    const rawTypes = settingsService.get('FAVORITES_AUTO_DOWNLOAD_TYPES');
-    const types =
-        rawTypes === undefined
-            ? [...FAVORITES_SYNC_KINDS]
-            : FAVORITES_SYNC_KINDS.filter((kind) =>
-                  rawTypes
-                      .split(',')
-                      .map((part) => part.trim().toLowerCase())
-                      .includes(kind)
-              );
-    const hours = Number.parseInt(String(settingsService.get('FAVORITES_SYNC_INTERVAL_HOURS') ?? ''), 10);
+    const { autoDownload, types, intervalHours } = CONFIG.favorites;
     return {
-        autoDownload: enabled === 'true' || enabled === '1',
-        types,
-        intervalHours:
-            Number.isFinite(hours) &&
-            hours >= MIN_FAVORITES_SYNC_INTERVAL_HOURS &&
-            hours <= MAX_FAVORITES_SYNC_INTERVAL_HOURS
-                ? hours
-                : DEFAULT_FAVORITES_SYNC_INTERVAL_HOURS
+        autoDownload,
+        types: FAVORITES_SYNC_KINDS.filter((kind) => types.includes(kind)),
+        intervalHours
     };
 }
 
@@ -234,6 +237,23 @@ export interface FavoritesSyncDeps {
     now: () => number;
 }
 
+/**
+ * Album ids with their Qobuz track count where it matters: the favorite id
+ * list carries no counts, so albums that already have local tracks get theirs
+ * from Qobuz (checkAlbums), and complete albums are skipped instead of queued.
+ * Albums without local tracks need no count (they are queued anyway).
+ */
+export async function withAlbumTracksCounts(ids: string[]): Promise<LibraryIdItem[]> {
+    try {
+        const info = await checkAlbums(ids);
+        return ids.map((id) => ({ id, tracksCount: info[id]?.total ?? null }));
+    } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.debug(`Favorites auto-download: album track counts unavailable: ${message}`, 'FAVORITES');
+        return ids.map((id) => ({ id }));
+    }
+}
+
 const defaultDeps = (): FavoritesSyncDeps => ({
     store: new SqliteFavoritesSyncStore(),
     readSettings: readFavoritesSyncSettings,
@@ -244,7 +264,8 @@ const defaultDeps = (): FavoritesSyncDeps => ({
         return { albums: ids.albums, tracks: ids.tracks };
     },
     ensureReady: () => downloadActionsService.ensureReady(),
-    queue: (kind, ids, source) => queueLibraryIds(kind, ids, undefined, source),
+    queue: async (kind, ids, source) =>
+        queueLibraryIds(kind, kind === 'albums' ? await withAlbumTracksCounts(ids) : ids, undefined, source),
     notify: (queued) => {
         notificationService.info(
             'New favorites',
@@ -253,6 +274,11 @@ const defaultDeps = (): FavoritesSyncDeps => ({
     },
     now: () => Date.now()
 });
+
+const parseTime = (iso: string | null): number | null => {
+    const ms = iso ? Date.parse(iso) : Number.NaN;
+    return Number.isFinite(ms) ? ms : null;
+};
 
 const SETTINGS_KEYS = ['FAVORITES_AUTO_DOWNLOAD', 'FAVORITES_AUTO_DOWNLOAD_TYPES', 'FAVORITES_SYNC_INTERVAL_HOURS'];
 
@@ -350,10 +376,27 @@ export class FavoritesSyncService {
         };
         if (!userId || settings.types.length === 0) return result;
 
+        // When the previous check ran, over every type (a type left out of it
+        // has an older last_sync_at and must not download what piled up).
+        const previousCheckAt = parseTime(store.getLastSyncAt(userId, FAVORITES_SYNC_KINDS));
+        const staleBefore = this.d.now() - staleBaselineAfterMs(settings.intervalHours);
+
         const favorites = await this.d.getFavoriteIds();
         for (const kind of settings.types) {
+            // The ids belong to the account that was active when they were
+            // fetched; never record or queue them for another one.
+            if (this.d.userId() !== userId) {
+                logger.warn('Favorites auto-download: the Qobuz account changed during a check; check aborted', 'FAVORITES');
+                return result;
+            }
             const current = (favorites[kind] ?? []).map(String);
-            if (!store.hasBaseline(userId, kind)) {
+            const lastSyncAt = parseTime(store.getLastSyncAt(userId, [kind]));
+            const usable =
+                store.hasBaseline(userId, kind) &&
+                lastSyncAt !== null &&
+                lastSyncAt >= staleBefore &&
+                (previousCheckAt === null || lastSyncAt >= previousCheckAt);
+            if (!usable) {
                 store.recordBaseline(userId, kind, current, checkedAt);
                 result.baselineRecorded.push(kind);
                 continue;

@@ -11,13 +11,17 @@ vi.mock('./qobuz-library/index.js', () => ({ qobuzLibraryService: {} }));
 vi.mock('./download-actions.js', () => ({ downloadActionsService: {} }));
 vi.mock('./notifications.js', () => ({ notificationService: { info: vi.fn() } }));
 vi.mock('./database/index.js', () => ({ databaseService: {} }));
+const lookup = vi.hoisted(() => ({ checkAlbums: vi.fn() }));
+vi.mock('./library-lookup.js', () => lookup);
 
 import {
+    FAVORITES_SYNC_MIN_STALE_MS,
     FAVORITES_SYNC_SOURCE,
     FAVORITES_SYNC_STARTUP_DELAY_MS,
     FavoritesSyncService,
     readFavoritesSyncSettings,
     SqliteFavoritesSyncStore,
+    withAlbumTracksCounts,
     type FavoritesSyncDeps,
     type FavoritesSyncSettings
 } from './favorites-sync.js';
@@ -26,21 +30,69 @@ import { eventBus, EVENTS } from '../utils/events.js';
 const HOUR = 60 * 60 * 1000;
 
 describe('readFavoritesSyncSettings', () => {
-    beforeEach(() => settings.clear());
+    // Settings changes always emit SETTINGS.UPDATED, which clears CONFIG's cache.
+    const changed = () => eventBus.emit(EVENTS.SETTINGS.UPDATED, { keys: ['FAVORITES_AUTO_DOWNLOAD'] });
+    beforeEach(() => {
+        settings.clear();
+        changed();
+    });
 
     it('defaults to off, both types and 6 hours', () => {
         expect(readFavoritesSyncSettings()).toEqual({ autoDownload: false, types: ['albums', 'tracks'], intervalHours: 6 });
     });
 
-    it('parses the stored values and ignores invalid ones', () => {
+    it('parses the stored values like CONFIG.favorites and clamps the interval', async () => {
+        const { CONFIG } = await import('../config.js');
         settings.set('FAVORITES_AUTO_DOWNLOAD', 'true');
         settings.set('FAVORITES_AUTO_DOWNLOAD_TYPES', ' tracks ,videos');
         settings.set('FAVORITES_SYNC_INTERVAL_HOURS', '12');
+        changed();
         expect(readFavoritesSyncSettings()).toEqual({ autoDownload: true, types: ['tracks'], intervalHours: 12 });
 
-        settings.set('FAVORITES_SYNC_INTERVAL_HOURS', '0');
+        settings.set('FAVORITES_AUTO_DOWNLOAD', '1');
+        settings.set('FAVORITES_SYNC_INTERVAL_HOURS', '500');
         settings.set('FAVORITES_AUTO_DOWNLOAD_TYPES', '');
-        expect(readFavoritesSyncSettings()).toMatchObject({ types: [], intervalHours: 6 });
+        changed();
+        expect(readFavoritesSyncSettings()).toEqual({ autoDownload: false, types: [], intervalHours: 168 });
+        expect(readFavoritesSyncSettings()).toEqual({ ...CONFIG.favorites });
+
+        settings.set('FAVORITES_SYNC_INTERVAL_HOURS', '0');
+        changed();
+        expect(readFavoritesSyncSettings().intervalHours).toBe(1);
+    });
+
+    it('lets the scheduler see a settings change in the same event', () => {
+        const service = new FavoritesSyncService({
+            store: { getLastSyncAt: () => null } as never,
+            hasCredentials: () => true,
+            userId: () => 'u'
+        });
+        service.start();
+        expect(service.getStatus().nextSyncAt).toBeNull();
+        settings.set('FAVORITES_AUTO_DOWNLOAD', 'true');
+        eventBus.emit(EVENTS.SETTINGS.UPDATED, { keys: ['FAVORITES_AUTO_DOWNLOAD'] });
+        expect(service.getStatus()).toMatchObject({ autoDownload: true });
+        expect(service.getStatus().nextSyncAt).not.toBeNull();
+        service.stop();
+    });
+});
+
+describe('withAlbumTracksCounts', () => {
+    it('adds the Qobuz track counts so complete albums can be skipped', async () => {
+        lookup.checkAlbums.mockResolvedValueOnce({
+            a1: { status: 'partial', downloaded: 3, total: 10 },
+            a2: { status: 'missing', downloaded: 0, total: null }
+        });
+        expect(await withAlbumTracksCounts(['a1', 'a2'])).toEqual([
+            { id: 'a1', tracksCount: 10 },
+            { id: 'a2', tracksCount: null }
+        ]);
+        expect(lookup.checkAlbums).toHaveBeenCalledWith(['a1', 'a2']);
+    });
+
+    it('falls back to plain ids when the lookup fails', async () => {
+        lookup.checkAlbums.mockRejectedValueOnce(new Error('db closed'));
+        expect(await withAlbumTracksCounts(['a1'])).toEqual([{ id: 'a1' }]);
     });
 });
 
@@ -159,6 +211,70 @@ describe('FavoritesSyncService', () => {
         const result = await service.syncNow();
         expect(result.baselineRecorded).toEqual(['tracks']);
         expect(deps.queue).not.toHaveBeenCalled();
+    });
+
+    it('re-records the baseline of a type that was left out of the previous check', async () => {
+        await service.syncNow();
+        current = { ...current, types: ['albums'] };
+        vi.setSystemTime(Date.now() + HOUR);
+        await service.syncNow();
+
+        favorites.tracks.push('t-added-while-excluded');
+        favorites.albums.push('a-new');
+        current = { ...current, types: ['albums', 'tracks'] };
+        vi.setSystemTime(Date.now() + HOUR);
+        const result = await service.syncNow();
+        expect(result.baselineRecorded).toEqual(['tracks']);
+        expect(deps.queue).toHaveBeenCalledTimes(1);
+        expect(deps.queue).toHaveBeenCalledWith('albums', ['a-new'], FAVORITES_SYNC_SOURCE);
+        expect(deps.store.getKnown('user-1', 'tracks').has('t-added-while-excluded')).toBe(true);
+    });
+
+    it('does not download from a stale baseline, manual or scheduled', async () => {
+        await service.syncNow();
+        favorites.albums.push('old-1', 'old-2');
+        vi.setSystemTime(Date.now() + FAVORITES_SYNC_MIN_STALE_MS + HOUR);
+
+        // Manual check with auto-download off, long after the last one.
+        current = { ...current, autoDownload: false };
+        const manual = await service.syncNow();
+        expect(manual.baselineRecorded).toEqual(['albums', 'tracks']);
+        expect(deps.queue).not.toHaveBeenCalled();
+
+        // Scheduled check at startup (e.g. enabled through the environment) after a long pause.
+        favorites.albums.push('old-3');
+        vi.setSystemTime(Date.now() + FAVORITES_SYNC_MIN_STALE_MS + HOUR);
+        current = { ...current, autoDownload: true };
+        service.start();
+        await vi.advanceTimersByTimeAsync(FAVORITES_SYNC_STARTUP_DELAY_MS);
+        expect(deps.getFavoriteIds).toHaveBeenCalledTimes(3);
+        expect(deps.queue).not.toHaveBeenCalled();
+        expect(deps.store.getKnown('user-1', 'albums').has('old-3')).toBe(true);
+    });
+
+    it('still downloads favorites added while the app was closed for a few days', async () => {
+        await service.syncNow();
+        favorites.albums.push('while-closed');
+        vi.setSystemTime(Date.now() + 3 * 24 * HOUR);
+        const result = await service.syncNow();
+        expect(result.baselineRecorded).toEqual([]);
+        expect(deps.queue).toHaveBeenCalledWith('albums', ['while-closed'], FAVORITES_SYNC_SOURCE);
+    });
+
+    it('aborts a check when the Qobuz account changes while favorites are loaded', async () => {
+        await service.syncNow();
+        favorites.albums.push('a3');
+        vi.mocked(deps.getFavoriteIds).mockImplementationOnce(async () => {
+            const ids = { albums: [...favorites.albums], tracks: [...favorites.tracks] };
+            user = 'user-2';
+            return ids;
+        });
+        const result = await service.syncNow();
+        expect(result.queued).toBe(0);
+        expect(result.baselineRecorded).toEqual([]);
+        expect(deps.queue).not.toHaveBeenCalled();
+        expect(deps.store.hasBaseline('user-2', 'albums')).toBe(false);
+        expect(deps.store.getKnown('user-1', 'albums').has('a3')).toBe(false);
     });
 
     it('keeps a separate baseline per Qobuz account', async () => {
