@@ -16,6 +16,7 @@ import { notificationService } from '../notifications.js';
 import { tokenManager } from '../../utils/token.js';
 import { printBox } from '../../utils/ui.js';
 import { createMcpEndpoint, createMcpAdminRouter } from '../../mcp/http.js';
+import { isLoopbackHost, setDashboardBoundHost } from './bind-host.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -129,7 +130,7 @@ export class DashboardService {
 
             const hostHeader = req.headers.host || '';
             const hostname = hostHeader.replace(/:\d+$/, '');
-            if (!hostname || DashboardService.isLoopbackHost(hostname)) return next();
+            if (!hostname || isLoopbackHost(hostname)) return next();
 
             logger.warn(`Rejected request with non-loopback Host header: ${hostHeader}`, 'SECURITY');
             res.status(403).json({ error: 'Forbidden: invalid Host header' });
@@ -438,19 +439,8 @@ export class DashboardService {
      * deployments a DNS-rebinding attack turns into a same-origin API.
      */
     private requiresLoopbackHost(): boolean {
-        if (!DashboardService.isLoopbackHost(this.boundHost)) return false;
+        if (!isLoopbackHost(this.boundHost)) return false;
         return process.env.QBZ_DESKTOP === '1' || !CONFIG.dashboard.password;
-    }
-
-    /** Loopback binds are reachable from this machine alone. */
-    private static isLoopbackHost(host: string): boolean {
-        const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
-        return (
-            normalized === 'localhost' ||
-            normalized === '::1' ||
-            normalized === '127.0.0.1' ||
-            normalized.startsWith('127.')
-        );
     }
 
     public start(port?: number): void {
@@ -461,7 +451,7 @@ export class DashboardService {
         // including the ones that delete and overwrite library files -- to anyone
         // who can reach the port. Fall back to loopback rather than coming up wide
         // open; setting a password restores the requested bind.
-        if (!DashboardService.isLoopbackHost(host) && !CONFIG.dashboard.password) {
+        if (!isLoopbackHost(host) && !CONFIG.dashboard.password) {
             logger.error(
                 `Refusing to serve ${host}:${this.port} without a dashboard password — ` +
                     'binding to 127.0.0.1 instead. Set a dashboard password to expose it.',
@@ -471,6 +461,7 @@ export class DashboardService {
         }
 
         this.boundHost = host;
+        setDashboardBoundHost(host);
 
         this.httpServer.once('error', (error) => {
             const message = error instanceof Error ? error.message : String(error);
@@ -517,6 +508,7 @@ Mode:    ${CONFIG.dashboard.password ? chalk.red('Protected') : chalk.yellow('Pu
             this.checkInterval = null;
         }
         this.httpServer.close();
+        setDashboardBoundHost(null);
     }
 }
 

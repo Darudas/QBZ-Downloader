@@ -1,10 +1,16 @@
 import { Router, Request, Response } from 'express';
+import crypto from 'crypto';
 import { downloadQueue } from '../../queue/queue.js';
 import { CONFIG } from '../../../config.js';
 import { APP_VERSION } from '../../../constants.js';
 import { settingsService } from '../../settings.js';
 import { tokenManager } from '../../../utils/token.js';
-import { AuthenticationError, APIError, ForbiddenError } from '../../../utils/errors.js';
+import {
+    AuthenticationError,
+    APIError,
+    ForbiddenError,
+    ValidationError
+} from '../../../utils/errors.js';
 import qobuzApi from '../../../api/qobuz.js';
 import { databaseService } from '../../database/index.js';
 import { historyService } from '../../history.js';
@@ -15,80 +21,89 @@ import { queueProcessor } from '../../queue-processor.js';
 import { playlistWatcherService } from '../../PlaylistWatcherService.js';
 import { qobuzAccountService } from '../../QobuzAccountService.js';
 import { configBackupService } from '../../ConfigBackupService.js';
+import { parseSettingsUpdate } from '../../settings-schema.js';
+import { cacheService, USER_CACHE_PREFIX } from '../../../utils/cache.js';
+import { isDashboardNetworkExposed } from '../bind-host.js';
+import { routeErrorHandler } from './route-utils.js';
 
 const router = Router();
 const api = qobuzApi;
 
-const APP_SETTING_KEYS = new Set([
-    'QOBUZ_APP_ID',
-    'QOBUZ_APP_SECRET',
-    'QOBUZ_USER_AUTH_TOKEN',
-    'QOBUZ_USER_ID',
-    'QOBUZ_ACCOUNTS',
-    'QOBUZ_ACTIVE_ACCOUNT_ID',
-    'DOWNLOADS_PATH',
-    'DEFAULT_QUALITY',
-    'MAX_CONCURRENCY',
-    'RETRY_ATTEMPTS',
-    'RETRY_DELAY',
-    'FOLDER_TEMPLATE',
-    'FILE_TEMPLATE',
-    'EMBED_COVER_ART',
-    'SAVE_COVER_FILE',
-    'COVER_SIZE',
-    'DOWNLOAD_LYRICS',
-    'EMBED_LYRICS',
-    'SAVE_LRC_FILE',
-    'LYRICS_TYPE',
-    'DASHBOARD_PORT',
-    'DASHBOARD_PASSWORD',
-    'STREAMING_QUALITY',
-    'SPOTIFY_CLIENT_ID',
-    'SPOTIFY_CLIENT_SECRET',
-    'AI_REPAIR_ENABLED',
-    'AI_PROVIDER',
-    'AI_API_KEY',
-    'AI_MODEL',
-    'MEDIA_SERVER_ENABLED',
-    'MEDIA_SERVER_TYPE',
-    'MEDIA_SERVER_URL',
-    'MEDIA_SERVER_TOKEN',
-    'MEDIA_SERVER_LIBRARY_ID',
-    'EXPORT_ENABLED',
-    'EXPORT_FORMAT',
-    'EXPORT_BITRATE',
-    'EXPORT_KEEP_ORIGINAL',
-    'EXPORT_PATH',
-    'BANDWIDTH_LIMIT',
-    'UI_BATCH_STAGING_URLS',
-    'UI_LAST_TAB',
-    'UI_ACTIVE_THEME_ID',
-    'UI_LANGUAGE',
-    'UI_THEME',
-    'UI_ACCENT'
-]);
+/**
+ * `GET /api/settings` is polled by the dashboard, and checking the Qobuz login
+ * used to cost a user/get round trip every time. The result is cached briefly
+ * under a user-scoped key (cleared on account switch and credential changes by
+ * clearUserScopedCache) that also embeds a fingerprint of the credentials, so
+ * new credentials are never answered from the old entry.
+ */
+const USER_INFO_CACHE_PREFIX = `${USER_CACHE_PREFIX}settings:user-info:`;
+const USER_INFO_TTL_SECONDS = 60;
+const USER_INFO_FAILURE_TTL_SECONDS = 10;
+const userInfoInFlight = new Map<string, Promise<QobuzLoginState>>();
 
-const CLEARABLE_SETTING_KEYS = new Set([
-    'DASHBOARD_PASSWORD',
-    'UI_BATCH_STAGING_URLS',
-    'UI_ACTIVE_THEME_ID'
-]);
+interface QobuzLoginState {
+    valid: boolean;
+    username: string;
+}
 
-async function getSettingsPayload() {
-    let qobuz_valid = false;
-    let username = '';
+function credentialFingerprint(): string {
+    const { appId, appSecret, token, userId } = CONFIG.credentials;
+    return crypto
+        .createHash('sha256')
+        .update([appId, appSecret, token, userId].join('\u0000'))
+        .digest('hex')
+        .slice(0, 32);
+}
 
+async function fetchQobuzLoginState(): Promise<QobuzLoginState> {
     try {
-        if (CONFIG.credentials.appId && CONFIG.credentials.token) {
-            const user = await api.getUserInfo();
-            if (user.success) {
-                qobuz_valid = true;
-                username = (user.data as any)?.credential?.username || '';
-            }
+        const user = await api.getUserInfo();
+        if (user.success) {
+            const data = user.data as { credential?: { username?: unknown } } | undefined;
+            const username = data?.credential?.username;
+            return { valid: true, username: typeof username === 'string' ? username : '' };
         }
     } catch {
-        qobuz_valid = false;
+        // Treated as "not logged in"; the login route reports the actual error.
     }
+    return { valid: false, username: '' };
+}
+
+async function getQobuzLoginState(): Promise<QobuzLoginState> {
+    if (!CONFIG.credentials.appId || !CONFIG.credentials.token) {
+        return { valid: false, username: '' };
+    }
+
+    const key = USER_INFO_CACHE_PREFIX + credentialFingerprint();
+    const cached = cacheService.get(key) as QobuzLoginState | null;
+    if (cached) return cached;
+
+    let pending = userInfoInFlight.get(key);
+    if (!pending) {
+        pending = fetchQobuzLoginState()
+            .then((state) => {
+                cacheService.set(
+                    key,
+                    state,
+                    state.valid ? USER_INFO_TTL_SECONDS : USER_INFO_FAILURE_TTL_SECONDS
+                );
+                return state;
+            })
+            .finally(() => userInfoInFlight.delete(key));
+        userInfoInFlight.set(key, pending);
+    }
+    return pending;
+}
+
+/** Forget the cached login state, e.g. when Qobuz just rejected the token. */
+export function clearQobuzLoginStateCache(): void {
+    cacheService.deleteByPrefix(USER_INFO_CACHE_PREFIX);
+}
+
+tokenManager.on('token:invalid', clearQobuzLoginStateCache);
+
+async function getSettingsPayload() {
+    const { valid: qobuz_valid, username } = await getQobuzLoginState();
 
     return {
         VERSION: APP_VERSION,
@@ -135,6 +150,9 @@ async function getSettingsPayload() {
         EXPORT_KEEP_ORIGINAL: CONFIG.export.keepOriginal,
         EXPORT_PATH: CONFIG.export.outputDir,
         BANDWIDTH_LIMIT: CONFIG.download.bandwidthLimit,
+        FAVORITES_AUTO_DOWNLOAD: CONFIG.favorites.autoDownload,
+        FAVORITES_AUTO_DOWNLOAD_TYPES: CONFIG.favorites.types,
+        FAVORITES_SYNC_INTERVAL_HOURS: CONFIG.favorites.intervalHours,
         FFMPEG_AVAILABLE: await formatConverterService.isAvailable(),
         UI_BATCH_STAGING_URLS: settingsService.get('UI_BATCH_STAGING_URLS') || '',
         UI_LAST_TAB: settingsService.get('UI_LAST_TAB') || 'search',
@@ -271,89 +289,34 @@ router.get('/system/status', async (_req: Request, res: Response) => {
     res.json(await getSettingsPayload());
 });
 
-router.post('/settings/update', async (req: Request, res: Response) => {
-    try {
-        const requestBody = (req.body || {}) as Record<string, unknown>;
-        const nestedSettings =
-            requestBody.settings && typeof requestBody.settings === 'object'
-                ? (requestBody.settings as Record<string, unknown>)
-                : {};
-        const body = { ...requestBody, ...nestedSettings };
-        const updates: Record<string, string> = {};
+router.post('/settings/update', (req: Request, res: Response) => {
+    // Throws a ValidationError (400 JSON via routeErrorHandler) on any unknown,
+    // read-only or invalid field; nothing is written in that case.
+    const updates = parseSettingsUpdate(req.body ?? {});
 
-        const setIfDefined = (key: string, value: unknown) => {
-            if (value === undefined || value === null) return;
-            if (!APP_SETTING_KEYS.has(key)) return;
-
-            const normalized =
-                typeof value === 'boolean' ? String(value) : String(value).trim();
-            if (normalized === '' && !CLEARABLE_SETTING_KEYS.has(key)) return;
-            updates[key] = normalized;
-        };
-
-        setIfDefined('QOBUZ_APP_ID', body.app_id);
-        setIfDefined('QOBUZ_APP_SECRET', body.app_secret);
-        setIfDefined('QOBUZ_USER_AUTH_TOKEN', body.user_auth_token);
-        setIfDefined('QOBUZ_USER_AUTH_TOKEN', body.token);
-        setIfDefined('QOBUZ_USER_ID', body.user_id);
-        setIfDefined('DOWNLOADS_PATH', body.downloads_path);
-        setIfDefined('DEFAULT_QUALITY', body.default_quality);
-        setIfDefined('MAX_CONCURRENCY', body.max_concurrency);
-        setIfDefined('RETRY_ATTEMPTS', body.retry_attempts);
-        setIfDefined('RETRY_DELAY', body.retry_delay);
-        setIfDefined('FOLDER_TEMPLATE', body.folder_template);
-        setIfDefined('FILE_TEMPLATE', body.file_template);
-        setIfDefined('EMBED_COVER_ART', body.embed_cover_art);
-        setIfDefined('SAVE_COVER_FILE', body.save_cover_file);
-        setIfDefined('COVER_SIZE', body.cover_size);
-        setIfDefined('DOWNLOAD_LYRICS', body.download_lyrics);
-        setIfDefined('EMBED_LYRICS', body.embed_lyrics);
-        setIfDefined('SAVE_LRC_FILE', body.save_lrc_file);
-        setIfDefined('LYRICS_TYPE', body.lyrics_type);
-        setIfDefined('DASHBOARD_PORT', body.dashboard_port);
-        setIfDefined('DASHBOARD_PASSWORD', body.dashboard_password);
-        setIfDefined('STREAMING_QUALITY', body.streaming_quality);
-        setIfDefined('SPOTIFY_CLIENT_ID', body.spotify_client_id);
-        setIfDefined('SPOTIFY_CLIENT_SECRET', body.spotify_client_secret);
-        setIfDefined('AI_REPAIR_ENABLED', body.ai_repair_enabled);
-        setIfDefined('AI_PROVIDER', body.ai_provider);
-        setIfDefined('AI_API_KEY', body.ai_api_key);
-        setIfDefined('AI_MODEL', body.ai_model);
-        setIfDefined('MEDIA_SERVER_ENABLED', body.media_server_enabled);
-        setIfDefined('MEDIA_SERVER_TYPE', body.media_server_type);
-        setIfDefined('MEDIA_SERVER_URL', body.media_server_url);
-        setIfDefined('MEDIA_SERVER_TOKEN', body.media_server_token);
-        setIfDefined('MEDIA_SERVER_LIBRARY_ID', body.media_server_library_id);
-        setIfDefined('EXPORT_ENABLED', body.export_enabled);
-        setIfDefined('EXPORT_FORMAT', body.export_format);
-        setIfDefined('EXPORT_BITRATE', body.export_bitrate);
-        setIfDefined('EXPORT_KEEP_ORIGINAL', body.export_keep_original);
-        setIfDefined('EXPORT_PATH', body.export_path);
-        setIfDefined('BANDWIDTH_LIMIT', body.bandwidth_limit);
-        setIfDefined('UI_BATCH_STAGING_URLS', body.ui_batch_staging_urls);
-        setIfDefined('UI_LAST_TAB', body.ui_last_tab);
-        setIfDefined('UI_ACTIVE_THEME_ID', body.ui_active_theme_id);
-        setIfDefined('UI_LANGUAGE', body.ui_language);
-        setIfDefined('UI_THEME', body.ui_theme);
-        setIfDefined('UI_ACCENT', body.ui_accent);
-
-        if (Object.keys(updates).length === 0) {
-            res.status(400).json({ error: 'No valid settings provided' });
-            return;
-        }
-
-        settingsService.setMany(updates);
-
-        if (updates.QOBUZ_USER_AUTH_TOKEN) {
-            tokenManager.clearValidation();
-        }
-
-        startBackgroundServicesIfReady();
-
-        res.json({ success: true, message: 'Settings updated successfully' });
-    } catch (error: unknown) {
-        res.status(500).json({ error: (error as Error).message });
+    if (Object.keys(updates).length === 0) {
+        res.status(400).json({ error: 'No valid settings provided', code: 'VALIDATION_ERROR' });
+        return;
     }
+
+    // start() refuses a network bind without a password, but a running server
+    // keeps its socket: clearing the password here would leave it wide open.
+    if (updates.DASHBOARD_PASSWORD === '' && isDashboardNetworkExposed()) {
+        throw new ValidationError(
+            'The dashboard password cannot be removed while the dashboard is reachable from the ' +
+                'network. Set DASHBOARD_HOST to 127.0.0.1 and restart first.'
+        );
+    }
+
+    settingsService.setMany(updates);
+
+    if (updates.QOBUZ_USER_AUTH_TOKEN) {
+        tokenManager.clearValidation();
+    }
+
+    startBackgroundServicesIfReady();
+
+    res.json({ success: true, message: 'Settings updated successfully' });
 });
 
 router.post('/login', async (req: Request, res: Response) => {
@@ -425,11 +388,22 @@ router.post('/login', async (req: Request, res: Response) => {
 });
 
 router.post('/system/reset', async (req: Request, res: Response) => {
+    // Wipes credentials, settings, history and the queue: require an explicit
+    // confirmation so a stray or replayed POST cannot trigger it.
+    if ((req.body as { confirm?: unknown } | undefined)?.confirm !== 'RESET') {
+        res.status(400).json({
+            error: 'Confirmation required: send {"confirm":"RESET"}',
+            code: 'CONFIRMATION_REQUIRED'
+        });
+        return;
+    }
+
     try {
         databaseService.resetStatistics();
         databaseService.clearAllSettings();
         historyService.clearAll();
         downloadQueue.clear();
+        clearQobuzLoginStateCache();
         res.json({ success: true, message: 'All data and settings have been cleared.' });
     } catch (error: unknown) {
         res.status(500).json({ error: (error as Error).message });
@@ -507,5 +481,7 @@ router.delete('/themes/:id', async (req: Request, res: Response) => {
         res.status(500).json({ error: (error as Error).message });
     }
 });
+
+router.use(routeErrorHandler('System'));
 
 export default router;

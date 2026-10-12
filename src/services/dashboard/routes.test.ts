@@ -312,11 +312,21 @@ vi.mock('../../config.js', () => ({
             bitrate: '320k',
             outputDir: '',
             keepOriginal: true
+        },
+        favorites: {
+            autoDownload: false,
+            types: ['albums', 'tracks'],
+            intervalHours: 6
         }
     }
 }));
 
 import { registerRoutes } from './routes.js';
+import { settingsService } from '../settings.js';
+import { databaseService } from '../database/index.js';
+import qobuzApiForTests from '../../api/qobuz.js';
+import { clearQobuzLoginStateCache } from './routers/system.routes.js';
+import { setDashboardBoundHost } from './bind-host.js';
 import { downloadQueue } from '../queue/queue.js';
 import { queueProcessor } from '../queue-processor.js';
 import { validateEnvironment } from '../../utils/env.js';
@@ -424,6 +434,162 @@ describe('Dashboard API Routes', () => {
 
             expect(res.status).toBe(200);
             expect(res.body.success).toBe(true);
+        });
+
+        it('stores normalized values for the full settings form', async () => {
+            const res = await request(app).post('/api/settings/update').send({
+                downloads_path: '/music',
+                folder_template: '{albumArtist}/{album}/{disc_folder}',
+                file_template: '{track_number}. {title}',
+                max_concurrency: 3,
+                default_quality: 'max',
+                streaming_quality: 5,
+                embed_cover_art: false,
+                cover_size: 'large',
+                lyrics_type: 'synced',
+                dashboard_port: 3000,
+                export_bitrate: '256k',
+                spotify_client_secret: '',
+                favorites_auto_download_types: ['tracks']
+            });
+
+            expect(res.status).toBe(200);
+            expect(settingsService.setMany).toHaveBeenCalledWith({
+                DOWNLOADS_PATH: '/music',
+                FOLDER_TEMPLATE: '{albumArtist}/{album}/{disc_folder}',
+                FILE_TEMPLATE: '{track_number}. {title}',
+                MAX_CONCURRENCY: '3',
+                DEFAULT_QUALITY: 'max',
+                STREAMING_QUALITY: '5',
+                EMBED_COVER_ART: 'false',
+                COVER_SIZE: 'large',
+                LYRICS_TYPE: 'synced',
+                DASHBOARD_PORT: '3000',
+                EXPORT_BITRATE: '256k',
+                FAVORITES_AUTO_DOWNLOAD_TYPES: 'tracks'
+            });
+        });
+
+        it.each([
+            [{ default_quality: 9 }, 'default_quality'],
+            [{ max_concurrency: 0 }, 'max_concurrency'],
+            [{ dashboard_port: 70000 }, 'dashboard_port'],
+            [{ embed_lyrics: 'yes' }, 'embed_lyrics'],
+            [{ cover_size: 'huge' }, 'cover_size'],
+            [{ folder_template: '../../etc/{album}' }, 'folder_template'],
+            [{ folder_template: '/etc/{album}' }, 'folder_template'],
+            [{ folder_template: 'C:\\Windows\\{album}' }, 'folder_template'],
+            [{ file_template: '{artist}/{title}' }, 'file_template'],
+            [{ downloads_path: '/' }, 'downloads_path'],
+            [{ media_server_url: 'file:///etc/passwd' }, 'media_server_url'],
+            [{ ui_accent: 'red; background: url(x)' }, 'ui_accent']
+        ])('rejects %o with a 400 naming the field', async (body, field) => {
+            const res = await request(app).post('/api/settings/update').send(body);
+
+            expect(res.status).toBe(400);
+            expect(res.body.code).toBe('VALIDATION_ERROR');
+            expect(res.body.error).toContain(field);
+            expect(settingsService.setMany).not.toHaveBeenCalled();
+        });
+
+        it('rejects unknown and read-only keys, including the MCP token hash', async () => {
+            for (const body of [
+                { bogus: 1 },
+                { MCP_TOKEN_HASH: 'f'.repeat(64) },
+                { settings: { mcp_enabled: true } },
+                { dashboard_host: '0.0.0.0' },
+                { qobuz_accounts: '[]' }
+            ]) {
+                const res = await request(app).post('/api/settings/update').send(body);
+                expect(res.status).toBe(400);
+            }
+            expect(settingsService.setMany).not.toHaveBeenCalled();
+        });
+
+        it('does not echo submitted values in validation errors', async () => {
+            const res = await request(app)
+                .post('/api/settings/update')
+                .send({ app_secret: 'super secret value' });
+
+            expect(res.status).toBe(400);
+            expect(res.body.error).not.toContain('super secret');
+        });
+
+        it('accepts upper-case setting keys', async () => {
+            const res = await request(app).post('/api/settings/update').send({ UI_THEME: 'light' });
+
+            expect(res.status).toBe(200);
+            expect(settingsService.setMany).toHaveBeenCalledWith({ UI_THEME: 'light' });
+        });
+
+        describe('clearing the dashboard password', () => {
+            afterEach(() => setDashboardBoundHost(null));
+
+            it('is allowed on a loopback bind', async () => {
+                setDashboardBoundHost('127.0.0.1');
+                const res = await request(app)
+                    .post('/api/settings/update')
+                    .send({ dashboard_password: '' });
+
+                expect(res.status).toBe(200);
+                expect(settingsService.setMany).toHaveBeenCalledWith({ DASHBOARD_PASSWORD: '' });
+            });
+
+            it('is refused while bound to a network address', async () => {
+                setDashboardBoundHost('0.0.0.0');
+                const res = await request(app)
+                    .post('/api/settings/update')
+                    .send({ dashboard_password: '' });
+
+                expect(res.status).toBe(400);
+                expect(res.body.error).toMatch(/password cannot be removed/);
+                expect(settingsService.setMany).not.toHaveBeenCalled();
+            });
+
+            it('still allows changing it while bound to a network address', async () => {
+                setDashboardBoundHost('0.0.0.0');
+                const res = await request(app)
+                    .post('/api/settings/update')
+                    .send({ dashboard_password: 'new-password' });
+
+                expect(res.status).toBe(200);
+            });
+        });
+    });
+
+    describe('GET /api/settings Qobuz login check', () => {
+        beforeEach(() => clearQobuzLoginStateCache());
+
+        it('caches the user/get result between polls', async () => {
+            vi.mocked(qobuzApiForTests.getUserInfo).mockResolvedValue({
+                success: true,
+                data: { credential: { username: 'miles' } } as never
+            });
+
+            const first = await request(app).get('/api/settings');
+            const second = await request(app).get('/api/settings');
+
+            expect(first.body.QOBUZ_CREDENTIALS_VALID).toBe(true);
+            expect(second.body.QOBUZ_USERNAME).toBe('miles');
+            expect(qobuzApiForTests.getUserInfo).toHaveBeenCalledTimes(1);
+        });
+
+        it('asks Qobuz again after the cache is cleared', async () => {
+            await request(app).get('/api/settings');
+            clearQobuzLoginStateCache();
+            await request(app).get('/api/settings');
+
+            expect(qobuzApiForTests.getUserInfo).toHaveBeenCalledTimes(2);
+        });
+    });
+
+    describe('POST /api/system/reset', () => {
+        it('refuses without the confirmation phrase', async () => {
+            for (const body of [{}, { confirm: true }, { confirm: 'reset' }]) {
+                const res = await request(app).post('/api/system/reset').send(body);
+                expect(res.status).toBe(400);
+            }
+            expect(databaseService.resetStatistics).not.toHaveBeenCalled();
         });
     });
 

@@ -9,7 +9,7 @@ vi.mock('./settings.js', () => ({
         getAll: vi.fn(),
         setMany: vi.fn()
     },
-    KNOWN_SETTING_KEYS: ['QOBUZ_APP_ID', 'UI_LANGUAGE']
+    KNOWN_SETTING_KEYS: ['QOBUZ_APP_ID', 'UI_LANGUAGE', 'FOLDER_TEMPLATE', 'MCP_TOKEN_HASH']
 }));
 
 vi.mock('./database/index.js', () => ({
@@ -38,7 +38,7 @@ describe('ConfigBackupService', () => {
         service = new ConfigBackupService();
         vi.mocked(settingsService.getAll).mockReturnValue({
             UI_LANGUAGE: 'id',
-            QOBUZ_APP_ID: 'app-id'
+            QOBUZ_APP_ID: '123456789'
         });
         vi.mocked(databaseService.getWatchedPlaylists).mockReturnValue([
             {
@@ -69,17 +69,18 @@ describe('ConfigBackupService', () => {
         const backup = service.exportEncrypted('strong-passphrase');
 
         expect(backup.format).toBe('qbz-config-backup');
-        expect(JSON.stringify(backup)).not.toContain('app-id');
+        expect(JSON.stringify(backup)).not.toContain('123456789');
 
         const result = await service.importEncrypted(backup, 'strong-passphrase');
 
         expect(result).toEqual({
             settings: 2,
+            skippedSettings: [],
             watchedPlaylists: 1,
             queueItems: 1
         });
         expect(settingsService.setMany).toHaveBeenCalledWith(
-            expect.objectContaining({ UI_LANGUAGE: 'id', QOBUZ_APP_ID: 'app-id' })
+            expect.objectContaining({ UI_LANGUAGE: 'id', QOBUZ_APP_ID: '123456789' })
         );
         expect(databaseService.upsertWatchedPlaylist).toHaveBeenCalledWith(
             expect.objectContaining({ id: 'watch-1', playlistId: 'pl-1' })
@@ -98,6 +99,20 @@ describe('ConfigBackupService', () => {
         expect(databaseService.clearWatchedPlaylists).toHaveBeenCalled();
         expect(downloadQueue.clear).toHaveBeenCalled();
         expect(databaseService.clearQueueItems).toHaveBeenCalled();
+    });
+
+    it('skips invalid values and never carries the MCP token hash', async () => {
+        vi.mocked(settingsService.getAll).mockReturnValue({
+            UI_LANGUAGE: 'id',
+            FOLDER_TEMPLATE: '../../etc/{album}',
+            MCP_TOKEN_HASH: 'f'.repeat(64)
+        });
+        const backup = service.exportEncrypted('strong-passphrase');
+
+        const result = await service.importEncrypted(backup, 'strong-passphrase');
+
+        expect(result.skippedSettings).toEqual(['FOLDER_TEMPLATE']);
+        expect(settingsService.setMany).toHaveBeenCalledWith({ UI_LANGUAGE: 'id' });
     });
 
     it('should reject weak passphrases', () => {

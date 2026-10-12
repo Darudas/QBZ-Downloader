@@ -3,10 +3,17 @@ import { z } from 'zod';
 import { settingsService, KNOWN_SETTING_KEYS } from './settings.js';
 import { databaseService } from './database/index.js';
 import { downloadQueue } from './queue/queue.js';
+import { filterImportedSettings } from './settings-schema.js';
 
 const BACKUP_FORMAT = 'qbz-config-backup';
 const BACKUP_VERSION = 1;
 const KDF_ITERATIONS = 210_000;
+
+/**
+ * Never exported or imported: the MCP token is only ever created by the
+ * server (POST /api/mcp/token), so a backup cannot plant a known token hash.
+ */
+const NON_PORTABLE_SETTING_KEYS = ['MCP_TOKEN_HASH', 'MCP_TOKEN_CREATED_AT'];
 
 const encryptedBackupSchema = z.object({
     format: z.literal(BACKUP_FORMAT),
@@ -33,6 +40,8 @@ export type EncryptedConfigBackup = z.infer<typeof encryptedBackupSchema>;
 
 export interface ConfigImportResult {
     settings: number;
+    /** Keys whose backed-up value failed validation and was not restored. */
+    skippedSettings: string[];
     watchedPlaylists: number;
     queueItems: number;
 }
@@ -45,7 +54,11 @@ export class ConfigBackupService {
             version: BACKUP_VERSION,
             exportedAt: new Date().toISOString(),
             data: {
-                settings: settingsService.getAll(),
+                settings: Object.fromEntries(
+                    Object.entries(settingsService.getAll()).filter(
+                        ([key]) => !NON_PORTABLE_SETTING_KEYS.includes(key)
+                    )
+                ),
                 watchedPlaylists: databaseService.getWatchedPlaylists(),
                 queue: databaseService.getQueueItems()
             }
@@ -72,9 +85,15 @@ export class ConfigBackupService {
         // settingsService.setMany mirrors every key it is given into
         // process.env, so an unfiltered import would let a crafted backup set
         // NODE_TLS_REJECT_UNAUTHORIZED, PATH or QBZ_DESKTOP.
+        // Values go through the same per-key validation as the settings route;
+        // invalid ones are skipped so an old backup still restores the rest.
         const knownKeys = KNOWN_SETTING_KEYS as readonly string[];
-        const allowedSettings = Object.fromEntries(
-            Object.entries(settings).filter(([key]) => knownKeys.includes(key))
+        const { valid: allowedSettings, skipped } = filterImportedSettings(
+            Object.fromEntries(
+                Object.entries(settings).filter(
+                    ([key]) => knownKeys.includes(key) && !NON_PORTABLE_SETTING_KEYS.includes(key)
+                )
+            )
         );
         settingsService.setMany(allowedSettings);
 
@@ -129,6 +148,7 @@ export class ConfigBackupService {
 
         return {
             settings: Object.keys(allowedSettings).length,
+            skippedSettings: skipped,
             watchedPlaylists: watchedPlaylists.length,
             queueItems: queue.length
         };

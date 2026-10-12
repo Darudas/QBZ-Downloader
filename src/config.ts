@@ -1,5 +1,12 @@
 import { settingsService } from './services/settings.js';
 import { eventBus, EVENTS } from './utils/events.js';
+import {
+    FAVORITES_AUTO_DOWNLOAD_TYPES,
+    FAVORITES_SYNC_INTERVAL_RANGE,
+    MCP_CONFIG_PERMISSIONS,
+    type FavoritesAutoDownloadType,
+    type McpConfigPermission
+} from './config-values.js';
 
 const configCache = new Map<string, unknown>();
 
@@ -165,11 +172,7 @@ export interface Config {
     };
 }
 
-export const MCP_CONFIG_PERMISSIONS = ['library', 'download', 'manage', 'destructive'] as const;
-export type McpConfigPermission = (typeof MCP_CONFIG_PERMISSIONS)[number];
-export const FAVORITES_AUTO_DOWNLOAD_TYPES = ['albums', 'tracks'] as const;
-export type FavoritesAutoDownloadType = (typeof FAVORITES_AUTO_DOWNLOAD_TYPES)[number];
-export const FAVORITES_SYNC_INTERVAL_RANGE = { min: 1, max: 168 } as const;
+export type { McpConfigPermission, FavoritesAutoDownloadType } from './config-values.js';
 
 /** Comma-separated list setting, reduced to the allowed values (deduplicated, in input order). */
 const getList = <T extends string>(key: string, def: string, allowed: readonly T[]): T[] => {
