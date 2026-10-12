@@ -132,6 +132,44 @@ describe('SettingsService', () => {
         expect(settings.get('LOADED')).toBe('yes');
     });
 
+    it('clearAll removes stored values, restores the startup env and announces the change', () => {
+        const previousDb = databaseService.getDb();
+        const rows = new Map<string, string>([
+            ['UI_THEME', 'light'],
+            ['DASHBOARD_PASSWORD', 'enc_secret'],
+            ['MAX_CONCURRENCY', '4']
+        ]);
+        vi.mocked(databaseService.getDb).mockReturnValue({
+            exec: vi.fn(),
+            prepare: vi.fn((sql: string) => ({
+                all: vi.fn(() =>
+                    sql.startsWith('SELECT key, value')
+                        ? [...rows].map(([key, value]) => ({ key, value }))
+                        : [...rows.keys()].map((key) => ({ key }))
+                ),
+                run: vi.fn((key?: string) => {
+                    if (sql.startsWith('DELETE') && key) rows.delete(key);
+                })
+            })),
+            transaction: vi.fn().mockImplementation((fn) => fn)
+        } as never);
+        const service = new SettingsService();
+        service.set('MAX_CONCURRENCY', '4');
+        expect(process.env.MAX_CONCURRENCY).toBe('4');
+        const emit = vi.spyOn(eventBus, 'emit');
+
+        const removed = service.clearAll(['DASHBOARD_PASSWORD']);
+
+        expect(removed.sort()).toEqual(['MAX_CONCURRENCY', 'UI_THEME']);
+        expect([...rows.keys()]).toEqual(['DASHBOARD_PASSWORD']);
+        expect(service.get('MAX_CONCURRENCY')).toBeUndefined();
+        expect(service.get('DASHBOARD_PASSWORD')).toBe('secret');
+        expect(process.env.MAX_CONCURRENCY).toBeUndefined();
+        expect(emit).toHaveBeenCalledWith(EVENTS.SETTINGS.UPDATED, { keys: expect.arrayContaining(['UI_THEME', 'MAX_CONCURRENCY']) });
+        vi.mocked(databaseService.getDb).mockReturnValue(previousDb);
+        emit.mockRestore();
+    });
+
     describe('environment overrides', () => {
         afterEach(() => {
             delete process.env.DASHBOARD_PASSWORD;

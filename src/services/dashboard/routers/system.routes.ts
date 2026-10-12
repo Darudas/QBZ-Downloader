@@ -408,7 +408,11 @@ router.post('/system/reset', async (req: Request, res: Response) => {
 
     try {
         databaseService.resetStatistics();
-        databaseService.clearAllSettings();
+        // On a server reachable from the network, keep how it is reached and
+        // its password: a reset must not leave it open to everyone.
+        settingsService.clearAll(
+            isDashboardNetworkExposed() ? ['DASHBOARD_PASSWORD', 'DASHBOARD_HOST', 'DASHBOARD_PORT'] : []
+        );
         historyService.clearAll();
         downloadQueue.clear();
         clearQobuzLoginStateCache();

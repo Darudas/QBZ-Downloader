@@ -100,6 +100,15 @@ export const KNOWN_SETTING_KEYS = [
 
 export type KnownSettingKey = (typeof KNOWN_SETTING_KEYS)[number];
 
+/**
+ * The environment as the process started, before settings were mirrored into
+ * it. A reset restores these instead of leaving mirrored copies of the wiped
+ * values behind (CONFIG falls back to process.env).
+ */
+const STARTUP_ENV: Readonly<Record<string, string | undefined>> = Object.fromEntries(
+    KNOWN_SETTING_KEYS.map((key) => [key, process.env[key]])
+);
+
 export class SettingsService {
 
     private initialized = false;
@@ -271,6 +280,34 @@ export class SettingsService {
             logger.error(`Failed to save setting ${key}: ${(error as Error).message}`, 'SETTINGS');
             throw error;
         }
+    }
+
+    /**
+     * Deletes every stored setting except `keep`, drops the cache, restores
+     * the startup environment for the removed keys and announces the change,
+     * so CONFIG and the services reading it stop using the old values.
+     */
+    clearAll(keep: readonly string[] = []): string[] {
+        this.ensureInitialized();
+        const db = databaseService.getDb();
+        const rows = db.prepare('SELECT key FROM app_settings').all() as Array<{ key: string }>;
+        const removed = rows.map((row) => row.key).filter((key) => !keep.includes(key));
+
+        const remove = db.prepare('DELETE FROM app_settings WHERE key = ?');
+        db.transaction((keys: string[]) => {
+            for (const key of keys) remove.run(key);
+        })(removed);
+
+        for (const key of removed) {
+            this.cache.delete(key);
+            if (!shouldMirrorToEnv(key)) continue;
+            const original = STARTUP_ENV[key];
+            if (original === undefined) delete process.env[key];
+            else process.env[key] = original;
+        }
+        logger.info(`Cleared ${removed.length} setting(s)`, 'SETTINGS');
+        eventBus.emit(EVENTS.SETTINGS.UPDATED, { keys: removed });
+        return removed;
     }
 
     setMany(values: Record<string, string>): void {

@@ -132,7 +132,8 @@ vi.mock('../settings.js', () => {
                 return values[key];
             }),
             set: vi.fn(),
-            setMany: vi.fn()
+            setMany: vi.fn(),
+            clearAll: vi.fn(() => [])
         }
     };
 });
@@ -611,6 +612,28 @@ describe('Dashboard API Routes', () => {
                 expect(res.status).toBe(400);
             }
             expect(databaseService.resetStatistics).not.toHaveBeenCalled();
+        });
+
+        describe('with confirmation', () => {
+            afterEach(() => setDashboardBoundHost(null));
+
+            it('clears every setting on a loopback bind', async () => {
+                setDashboardBoundHost('127.0.0.1');
+                const res = await request(app).post('/api/system/reset').send({ confirm: 'RESET' });
+                expect(res.status).toBe(200);
+                expect(settingsService.clearAll).toHaveBeenLastCalledWith([]);
+            });
+
+            it('keeps the dashboard password and address on a network bind', async () => {
+                setDashboardBoundHost('0.0.0.0');
+                const res = await request(app).post('/api/system/reset').send({ confirm: 'RESET' });
+                expect(res.status).toBe(200);
+                expect(settingsService.clearAll).toHaveBeenLastCalledWith([
+                    'DASHBOARD_PASSWORD',
+                    'DASHBOARD_HOST',
+                    'DASHBOARD_PORT'
+                ]);
+            });
         });
     });
 
