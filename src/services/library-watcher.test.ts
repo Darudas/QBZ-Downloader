@@ -89,6 +89,17 @@ describe('LibraryWatcher', () => {
         expect(h.scanLibrary).not.toHaveBeenCalled();
     });
 
+    it('ignores in-flight download files', async () => {
+        new LibraryWatcher().start();
+
+        trigger('add', 'music/01. Song.qbz-part.flac');
+        trigger('change', 'music/01. Song.qbz-replace-1700000000000.flac');
+        trigger('add', 'music/01. Song.qbz-backup-1700000000000.mp3');
+
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(h.scanLibrary).not.toHaveBeenCalled();
+    });
+
     it('skips the scan when one is already running', async () => {
         h.isScanInProgress.mockReturnValue(true);
         new LibraryWatcher().start();

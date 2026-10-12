@@ -165,6 +165,9 @@ export interface ScanProgress {
 }
 
 import { checkBinaryAvailability } from '../../utils/binaries.js';
+import { isPathInsideDirectory, isTemporaryDownloadFile } from './temp-files.js';
+
+export { isPathInsideDirectory, isTemporaryDownloadFile } from './temp-files.js';
 
 export class LibraryScannerService extends EventEmitter {
 
@@ -249,6 +252,10 @@ export class LibraryScannerService extends EventEmitter {
             databaseService.clearDuplicateScan();
 
             for (const cached of cachedRows) {
+                // A scan of a subfolder only knows about that subfolder. Rows
+                // elsewhere in the library are neither stale nor cached here.
+                if (!isPathInsideDirectory(cached.file_path, scanDir)) continue;
+
                 if (currentPaths.has(cached.file_path)) {
                     cacheByPath.set(cached.file_path, cached);
                 } else {
@@ -459,9 +466,9 @@ export class LibraryScannerService extends EventEmitter {
                 this.currentProgress = progress;
                 this.emit('scan:progress', progress);
 
-                const changedFilePaths = options.deep
-                    ? undefined
-                    : changedFilePathsForUpgrade;
+                // A deep scan re-checks every file it saw, but never files
+                // outside the scanned folder.
+                const changedFilePaths = options.deep ? currentPaths : changedFilePathsForUpgrade;
                 const upgradeCount = await this.checkQobuzUpgrades(changedFilePaths);
                 result.upgradeableFiles = upgradeCount;
                 logger.info(`Found ${upgradeCount} tracks with available upgrades`, 'SCANNER');
@@ -505,7 +512,7 @@ export class LibraryScannerService extends EventEmitter {
                         await scan(fullPath);
                     } else if (entry.isFile()) {
                         const ext = path.extname(entry.name).toLowerCase();
-                        if (this.supportedFormats.includes(ext)) {
+                        if (this.supportedFormats.includes(ext) && !isTemporaryDownloadFile(entry.name)) {
                             const stats = fs.statSync(fullPath);
                             files.push({
                                 filePath: fullPath,
@@ -933,6 +940,10 @@ export class LibraryScannerService extends EventEmitter {
         const titleGroups = new Map<string, { filePath: string; title: string; artist: string; album: string }[]>();
 
         for (const file of files) {
+            // Rows indexed before temp files were excluded must never be
+            // offered for deletion as a "duplicate" of the finished track.
+            if (isTemporaryDownloadFile(file.file_path)) continue;
+
             if (file.audio_fingerprint) {
                 const key = file.audio_fingerprint;
                 if (!fingerprintGroups.has(key)) fingerprintGroups.set(key, []);
@@ -951,13 +962,6 @@ export class LibraryScannerService extends EventEmitter {
                     artist: file.artist || '',
                     album: file.album || ''
                 });
-
-                if (normTitle.includes('stereo love')) {
-                    logger.debug(
-                        `[DUPLICATE_CHECK] Added to title group '${normTitle}': ${path.basename(file.file_path)} (Artist: ${file.artist})`,
-                        'SCANNER'
-                    );
-                }
             }
         }
 
