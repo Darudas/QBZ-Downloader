@@ -94,11 +94,16 @@ export const LyricsEditor: React.FC<LyricsEditorProps> = ({
             .join('\n');
 
         try {
-            await smartFetch(`/api/lyrics/${track.id}/save`, {
+            const res = await smartFetch(`/api/lyrics/${track.id}/save`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ content })
             });
+            if (!res || !res.ok) {
+                const data = res ? await res.json().catch(() => null) : null;
+                alert(`Failed to save lyrics${data?.error ? `: ${data.error}` : ''}`);
+                return;
+            }
             onSave();
         } catch (error) {
             console.error('Failed to save lyrics', error);

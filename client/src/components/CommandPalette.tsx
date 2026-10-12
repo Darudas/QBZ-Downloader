@@ -15,6 +15,56 @@ interface CommandItem {
     shortcut?: string;
 }
 
+interface SuggestionItem {
+    id: string | number;
+    name?: string;
+    title?: string;
+    artist?: { name?: string };
+    performer?: { name?: string };
+    album?: { id?: string | number; title?: string };
+}
+
+/** Shape of GET /api/search/suggestions. */
+interface SuggestionsResponse {
+    artists?: SuggestionItem[];
+    albums?: SuggestionItem[];
+    tracks?: SuggestionItem[];
+}
+
+type Navigate = ReturnType<typeof useNavigation>['navigate'];
+
+/** Maps the suggestions route ({artists, albums, tracks}) to palette entries. */
+const suggestionsToCommands = (data: SuggestionsResponse | null, navigate: Navigate): CommandItem[] => {
+    if (!data) return [];
+    const artists = (data.artists ?? []).map((artist): CommandItem => ({
+        id: `search-artist-${artist.id}`,
+        label: artist.name || 'Unknown artist',
+        sublabel: 'Artist',
+        icon: <Icons.Mic />,
+        category: 'Search Results',
+        action: () => navigate('artist', { id: String(artist.id) })
+    }));
+    const albums = (data.albums ?? []).map((album): CommandItem => ({
+        id: `search-album-${album.id}`,
+        label: album.title || 'Unknown album',
+        sublabel: ['Album', album.artist?.name].filter(Boolean).join(' • '),
+        icon: <Icons.Library />,
+        category: 'Search Results',
+        action: () => navigate('album', { id: String(album.id) })
+    }));
+    const tracks = (data.tracks ?? [])
+        .filter((track) => track.album?.id !== undefined)
+        .map((track): CommandItem => ({
+            id: `search-track-${track.id}`,
+            label: track.title || 'Unknown track',
+            sublabel: ['Track', track.performer?.name || track.artist?.name, track.album?.title].filter(Boolean).join(' • '),
+            icon: <Icons.Play />,
+            category: 'Search Results',
+            action: () => navigate('album', { id: String(track.album!.id) })
+        }));
+    return [...artists, ...albums, ...tracks].slice(0, 10);
+};
+
 export const CommandPalette: React.FC = () => {
     const [isOpen, setIsOpen] = useState(false);
     const [query, setQuery] = useState('');
@@ -72,24 +122,7 @@ export const CommandPalette: React.FC = () => {
             try {
                 const res = await smartFetch(`/api/search/suggestions?query=${encodeURIComponent(query)}`);
                 if (res && res.ok) {
-                    const data = await res.json();
-                    const results: CommandItem[] = (data.suggestions || []).slice(0, 10).map((s: any, idx: number) => ({
-                        id: `search-${idx}-${s.id}`,
-                        label: s.text,
-                        sublabel: s.type.charAt(0).toUpperCase() + s.type.slice(1),
-                        icon: s.type === 'artist' ? <Icons.Mic /> : s.type === 'album' ? <Icons.Library /> : <Icons.Play />,
-                        category: 'Search Results',
-                        action: () => {
-                            if (s.type === 'artist') {
-                                navigate('artist', { id: s.id });
-                            } else if (s.type === 'album') {
-                                navigate('album', { id: s.id });
-                            } else if (s.type === 'track') {
-                                setActiveTab('search');
-                            }
-                        }
-                    }));
-                    setSearchResults(results);
+                    setSearchResults(suggestionsToCommands(await res.json(), navigate));
                 }
             } catch (err) {
                 console.error('Command Palette Search Error:', err);

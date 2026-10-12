@@ -140,9 +140,24 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onSuccess }) => {
     const [error, setError] = useState('');
     const [loading, setLoading] = useState(false);
     const inputRef = useRef<HTMLInputElement>(null);
+    const [version, setVersion] = useState('');
 
     useEffect(() => {
         inputRef.current?.focus();
+    }, []);
+
+    useEffect(() => {
+        // /api/status is reachable without the dashboard password and reports the running version.
+        let cancelled = false;
+        fetch('/api/status')
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data: { version?: unknown } | null) => {
+                if (!cancelled && typeof data?.version === 'string') setVersion(data.version);
+            })
+            .catch(() => {});
+        return () => {
+            cancelled = true;
+        };
     }, []);
 
     const handleLogin = async (e: React.FormEvent) => {
@@ -193,9 +208,12 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onSuccess }) => {
                         Dashboard is currently locked for security. Please provide your administrative password to proceed and manage your high-res audio library.
                     </p>
                     <div className="login-footer-meta">
-                        <span>v5.2.0</span>
-
-                        <span className="dot"></span>
+                        {version && (
+                            <>
+                                <span>v{version}</span>
+                                <span className="dot"></span>
+                            </>
+                        )}
                         <span>This application uses the Qobuz API but is not certified by Qobuz.</span>
                     </div>
                 </div>

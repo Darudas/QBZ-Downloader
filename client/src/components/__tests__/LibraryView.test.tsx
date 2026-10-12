@@ -8,9 +8,10 @@ const mocks = vi.hoisted(() => ({
   socket: { on: vi.fn(), off: vi.fn() },
 }));
 
-vi.mock('../../utils/api', () => ({
-  smartFetch: mocks.smartFetch,
-}));
+vi.mock('../../utils/api', async () => {
+  const { apiJsonVia } = await import('../../test-utils/apiMock');
+  return { smartFetch: mocks.smartFetch, apiJson: apiJsonVia(mocks.smartFetch) };
+});
 
 vi.mock('../../contexts/SocketContext', () => ({
   useSocket: () => ({ socket: mocks.socket }),
@@ -97,6 +98,19 @@ describe('LibraryView', () => {
       expect(mocks.smartFetch).toHaveBeenCalledWith('/api/library/scan', expect.objectContaining({ method: 'POST' }));
     });
     expect(mocks.showToast).toHaveBeenCalledWith('Scan started', 'success');
+  });
+
+  it('reports a scan that the server refused', async () => {
+    mocks.smartFetch.mockImplementation(async (url: string) =>
+      url === '/api/library/scan'
+        ? mockResponse({ error: 'Library folder not found' }, false)
+        : mockResponse({ totalFiles: 0, duplicates: 0, upgradeable: 0, totalSize: 0, FFMPEG_AVAILABLE: true })
+    );
+    render(<LibraryView />);
+    await waitFor(() => expect(screen.getByText('action_scan')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('action_scan'));
+    await waitFor(() => expect(mocks.showToast).toHaveBeenCalledWith('Library folder not found', 'error'));
+    expect(mocks.showToast).not.toHaveBeenCalledWith('Scan started', 'success');
   });
 
   it('listens to socket scan events on mount', () => {

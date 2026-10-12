@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { useSettings } from './SettingsContext';
+import { apiJson } from '../utils/api';
 
 export interface Theme {
     id: string;
@@ -53,8 +54,7 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     const fetchThemes = async () => {
         try {
-            const res = await fetch('/api/themes');
-            const data = await res.json();
+            const data = await apiJson<Theme[]>('/api/themes');
             if (Array.isArray(data)) {
                 setThemes(data);
                 const savedThemeId = settings.UI_ACTIVE_THEME_ID;
@@ -98,30 +98,22 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         }
     };
 
+    /** Throws (ApiError) when the server refuses, so callers can report it. */
     const saveTheme = async (name: string, isDark: boolean, colors: Record<string, string>) => {
-        try {
-            const res = await fetch('/api/themes', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, isDark, colors })
-            });
-            const newTheme = await res.json();
-            setThemes(prev => [...prev, newTheme]);
-            applyTheme(newTheme);
-        } catch (error) {
-            console.error('Failed to save theme', error);
-        }
+        const newTheme = await apiJson<Theme>('/api/themes', {
+            method: 'POST',
+            body: { name, isDark, colors }
+        });
+        setThemes(prev => [...prev, newTheme]);
+        applyTheme(newTheme);
     };
 
+    /** Throws (ApiError) when the server refuses, so callers can report it. */
     const deleteTheme = async (id: string) => {
-        try {
-            await fetch(`/api/themes/${id}`, { method: 'DELETE' });
-            setThemes(prev => prev.filter(t => t.id !== id));
-            if (currentTheme.id === id) {
-                resetTheme();
-            }
-        } catch (error) {
-            console.error('Failed to delete theme', error);
+        await apiJson(`/api/themes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        setThemes(prev => prev.filter(t => t.id !== id));
+        if (currentTheme.id === id) {
+            resetTheme();
         }
     };
 

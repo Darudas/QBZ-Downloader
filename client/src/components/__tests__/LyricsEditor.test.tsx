@@ -75,6 +75,31 @@ describe('LyricsEditor', () => {
         });
     });
 
+    it('does not report a save the server refused', async () => {
+        const onSave = vi.fn();
+        const alertSpy = vi.spyOn(window, 'alert').mockImplementation(() => {});
+        mocks.smartFetch.mockResolvedValue({
+            ok: false,
+            json: vi.fn().mockResolvedValue({ error: 'Track not found in history' })
+        });
+
+        render(
+            <LyricsEditor
+                track={track}
+                initialContent={initialContent}
+                currentTime={12}
+                onSave={onSave}
+                onClose={vi.fn()}
+                audioRef={React.createRef<HTMLAudioElement>()}
+            />
+        );
+        fireEvent.click(screen.getByText('Save'));
+
+        await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('Failed to save lyrics: Track not found in history'));
+        expect(onSave).not.toHaveBeenCalled();
+        alertSpy.mockRestore();
+    });
+
     it('uses tap mode to stamp the next line with current playback time', async () => {
         mocks.smartFetch.mockResolvedValue({ ok: true });
 

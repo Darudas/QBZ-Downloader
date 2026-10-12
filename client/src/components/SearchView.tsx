@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { smartFetch } from '../utils/api';
+import { apiJson, smartFetch } from '../utils/api';
 import { useNavigation } from '../contexts/NavigationContext';
 import { useToast } from '../contexts/ToastContext';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -184,14 +184,10 @@ export const SearchView: React.FC = () => {
 
     const downloadLyrics = async (trackId: string) => {
         try {
-            await smartFetch('/api/lyrics/download', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ trackId })
-            });
+            await apiJson('/api/lyrics/download', { method: 'POST', body: { trackId } });
             showToast('Lyrics download queued', 'success');
         } catch (e) {
-            showToast('Failed to start lyrics download', 'error');
+            showToast(e instanceof Error ? e.message : 'Failed to start lyrics download', 'error');
         }
     };
 
