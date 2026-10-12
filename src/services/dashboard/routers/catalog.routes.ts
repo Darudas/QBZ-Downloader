@@ -193,7 +193,9 @@ router.get('/playlist/:id', async (req: Request, res: Response) => {
         res.status(404).json({ error: result.error || 'Playlist not found', code: 'NOT_FOUND' });
         return;
     }
-    res.json(result.data);
+    const data = result.data as unknown as Item;
+    flagTracks(itemsOf(data.tracks));
+    res.json(data);
 });
 
 router.get('/track/:id', async (req: Request, res: Response) => {
@@ -204,7 +206,9 @@ router.get('/track/:id', async (req: Request, res: Response) => {
         res.status(404).json({ error: result.error || 'Track not found', code: 'NOT_FOUND' });
         return;
     }
-    res.json(result.data);
+    const data = result.data as unknown as Item;
+    data.already_downloaded = isTrackInLibrary(id);
+    res.json(data);
 });
 
 router.get('/genres', async (_req: Request, res: Response) => {
