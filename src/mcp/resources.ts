@@ -150,7 +150,7 @@ export function registerPrompts(server: McpServer, allowed: ReadonlySet<McpPermi
                         '1. Check get_scan_status; if the library was never scanned, start one with start_library_scan and wait for it.\n' +
                         '2. Read list_upgrade_candidates (page until has_more is false) and group the results by album.\n' +
                         '3. Show me the albums with the current and the available quality.\n' +
-                        '4. Only for the ones I pick, call queue_upgrade; the old file is replaced after the new one is downloaded.'
+                        '4. Only for the ones I pick, call queue_upgrade with confirm=true; the old file is deleted after the new one is downloaded.'
                 )
         );
     }
@@ -164,7 +164,9 @@ export function registerPrompts(server: McpServer, allowed: ReadonlySet<McpPermi
         () =>
             userMessage(
                 'Help me clean up duplicate files in my local library.\n' +
-                    '1. Read list_duplicates (run start_library_scan first if nothing was scanned yet).\n' +
+                    (allowed.has('manage')
+                        ? '1. Read list_duplicates (run start_library_scan first if nothing was scanned yet).\n'
+                        : '1. Read list_duplicates. If nothing was scanned yet, ask me to run a library scan in the dashboard first.\n') +
                     '2. For each pair, show both files, the match type and confidence, and which one would be kept.\n' +
                     (allowed.has('destructive')
                         ? '3. Only for pairs I explicitly approve, call resolve_duplicate with confirm=true. It deletes a file; never do it without my approval.'

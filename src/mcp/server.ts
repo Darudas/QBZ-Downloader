@@ -10,7 +10,7 @@ import {
     toTrackSummary,
     type PageResult
 } from '../services/qobuz-library/mappers.js';
-import { downloadActionsService } from '../services/download-actions.js';
+import { downloadActionsService, queueStatusFilterSchema } from '../services/download-actions.js';
 import { downloadFavorites, downloadPurchases } from '../services/favorites-download.js';
 import { favoritesSyncService } from '../services/favorites-sync.js';
 import { downloadTrackLyrics, getTrackLyrics } from '../services/lyrics-actions.js';
@@ -38,7 +38,13 @@ import {
     getSafeSettings,
     safeSettingsUpdateSchema
 } from '../services/settings-schema.js';
-import { NotFoundError, toSafeErrorPayload, ValidationError } from '../utils/errors.js';
+import {
+    NotFoundError,
+    QobuzError,
+    sanitizeErrorMessage,
+    toSafeErrorPayload,
+    ValidationError
+} from '../utils/errors.js';
 import { logger } from '../utils/logger.js';
 import {
     APP_VERSION,
@@ -126,6 +132,9 @@ function sliceItems<T>(items: T[] | undefined, total: number | undefined, off: n
 }
 
 const MAX_LYRICS_CHARS = 20_000;
+const MAX_TITLE_CHARS = 300;
+
+const looksLikeEmail = (value: unknown): boolean => typeof value === 'string' && /\S@\S/.test(value);
 
 /** Smart playlist filter in the tools' snake_case shape. */
 function smartFilterOut(filter: ReturnType<typeof parseSmartPlaylistFilter>): Record<string, unknown> {
@@ -164,7 +173,13 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
                 return result;
             } catch (error: unknown) {
                 const safe = toSafeErrorPayload(error);
-                logger.warn(`MCP tool ${name} error: ${safe.code}`, 'MCP');
+                if (error instanceof QobuzError || safe.code !== 'INTERNAL_ERROR') {
+                    logger.warn(`MCP tool ${name} error: ${safe.code}`, 'MCP');
+                } else {
+                    // The client only gets the generic message; keep the cause for the server log.
+                    const detail = sanitizeErrorMessage(error instanceof Error ? error.message : String(error));
+                    logger.error(`MCP tool ${name} failed: ${detail || 'unknown error'}`, 'MCP');
+                }
                 return { content: [{ type: 'text', text: `Error (${safe.code}): ${safe.message}` }], isError: true };
             }
         };
@@ -189,7 +204,12 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         description: 'Safe details of the connected Qobuz account (display name, country, subscription, Hi-Res streaming).',
         inputSchema: z.object({}),
         annotations: READ
-    }, () => qobuzLibraryService.getAccountInfo());
+    }, async () => {
+        // The Qobuz login is often the e-mail address (and display_name falls
+        // back to it), so neither is passed on when it looks like one.
+        const { login: _login, ...info } = await qobuzLibraryService.getAccountInfo();
+        return { ...info, display_name: looksLikeEmail(info.display_name) ? null : info.display_name };
+    });
 
     tool('search_catalog', 'read', {
         title: 'Search Qobuz',
@@ -267,8 +287,10 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
             offset
         }),
         annotations: READ
-    }, ({ artist_id, release_type, limit: lim, offset: off }) =>
-        qobuzLibraryService.getArtistReleases(artist_id, { releaseType: release_type, limit: lim, offset: off }));
+    }, async ({ artist_id, release_type, limit: lim, offset: off }) => {
+        const page = await qobuzLibraryService.getArtistReleases(artist_id, { releaseType: release_type, limit: lim, offset: off });
+        return { ...page, items: page.items.map(toAlbumSummary) };
+    });
 
     tool('get_similar_artists', 'read', {
         title: 'Similar artists',
@@ -280,10 +302,20 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
 
     tool('get_playlist', 'read', {
         title: 'Playlist details',
-        description: 'A Qobuz playlist with a page of its tracks (tracks carry playlist_track_id).',
+        description:
+            'A Qobuz playlist with a page of its tracks. Tracks carry playlist_track_id (for ' +
+            'remove_tracks_from_playlist) and position; is_owner/can_add_tracks tell whether it can be edited.',
         inputSchema: z.object({ playlist_id: numericId, limit: limit(50), offset }),
         annotations: READ
-    }, ({ playlist_id, limit: lim, offset: off }) => qobuzLibraryService.getPlaylist(playlist_id, { limit: lim, offset: off }));
+    }, async ({ playlist_id, limit: lim, offset: off }) => {
+        const playlist = await qobuzLibraryService.getPlaylist(playlist_id, { limit: lim, offset: off });
+        return {
+            ...toPlaylistSummary(playlist),
+            is_owner: playlist.is_owner,
+            can_add_tracks: playlist.can_add_tracks,
+            tracks: mapPage(playlist.tracks, toTrackSummary)
+        };
+    });
 
     tool('get_label', 'read', {
         title: 'Label',
@@ -354,7 +386,8 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         description: 'Playlists the account owns and/or follows.',
         inputSchema: z.object({ filter: z.enum(QOBUZ_PLAYLIST_FILTERS).default('owner,subscriber'), limit: limit(25), offset }),
         annotations: READ
-    }, ({ filter, limit: lim, offset: off }) => qobuzLibraryService.listUserPlaylists({ filter, limit: lim, offset: off }));
+    }, async ({ filter, limit: lim, offset: off }) =>
+        mapPage(await qobuzLibraryService.listUserPlaylists({ filter, limit: lim, offset: off }), (p) => toPlaylistSummary(p)));
 
     tool('list_purchases', 'read', {
         title: 'Purchases',
@@ -370,7 +403,9 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         title: 'Download queue',
         description: 'Queue items with status and progress, optionally filtered by status.',
         inputSchema: z.object({
-            status: z.enum(['pending', 'downloading', 'processing', 'completed', 'partial', 'failed', 'cancelled']).optional(),
+            status: queueStatusFilterSchema
+                .optional()
+                .describe('Only items with this status; active = every running or pending item'),
             limit: limit(25),
             offset
         }),
@@ -379,17 +414,22 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
 
     tool('get_download_history', 'read', {
         title: 'Download history',
-        description: 'Recently downloaded tracks, optionally filtered by a text query.',
-        inputSchema: z.object({ query: z.string().max(200).optional(), limit: limit(25) }),
+        description: 'Downloaded tracks, newest first, optionally filtered by a text query (title, artist, album).',
+        inputSchema: z.object({
+            query: z.string().max(200).optional().describe('Text in the title, artist, album artist or album'),
+            limit: limit(25),
+            offset
+        }),
         annotations: READ_LOCAL
-    }, ({ query, limit: lim }) => {
-        const rows = query ? historyService.search(query) : historyService.getSorted(lim);
+    }, ({ query, limit: lim, offset: off }) => {
+        const page = historyService.query({ q: query, limit: lim, offset: off });
         return {
-            items: rows.slice(0, lim).map((r) => ({
+            ...page,
+            items: page.items.map((r) => ({
                 track_id: r.id,
-                title: r.title,
-                artist: r.artist,
-                album: r.album,
+                title: cap(r.title, MAX_TITLE_CHARS),
+                artist: cap(r.artist, MAX_TITLE_CHARS),
+                album: cap(r.album, MAX_TITLE_CHARS),
                 quality: r.quality,
                 downloaded_at: r.downloadedAt
             }))
@@ -574,16 +614,27 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
 
     tool('list_duplicates', 'read', {
         title: 'Duplicates',
-        description: 'Duplicate files found by the last library scan (run start_library_scan first).',
+        description:
+            'Unresolved duplicate pairs found by the last library scan. To delete one file of a pair, use ' +
+            'resolve_duplicate with duplicate_id (it picks the file to keep and updates the index). ' +
+            'file_1_library_file_id/file_2_library_file_id are the library_file_ids of the two files (null when ' +
+            'a file is no longer indexed).',
         inputSchema: z.object({ limit: limit(25), offset }),
         annotations: READ_LOCAL
     }, ({ limit: lim, offset: off }) => {
         const rows = databaseService.getDuplicates() as Array<Record<string, unknown>>;
+        const libraryFileId = (filePath: unknown): number | null => {
+            if (typeof filePath !== 'string') return null;
+            const id = Number(databaseService.getLibraryFileByPath(filePath)?.id);
+            return Number.isInteger(id) && id > 0 ? id : null;
+        };
         return sliceItems(
             rows.slice(off, off + lim).map((r) => ({
                 duplicate_id: r.id,
                 file_1: r.file_path_1,
+                file_1_library_file_id: libraryFileId(r.file_path_1),
                 file_2: r.file_path_2,
+                file_2_library_file_id: libraryFileId(r.file_path_2),
                 match_type: r.match_type,
                 confidence: r.confidence
             })),
@@ -971,9 +1022,15 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
     tool('queue_upgrade', 'manage', {
         title: 'Upgrade a local file',
         description:
-            'Download a better-quality version of a local file (see list_upgrade_candidates). The old file is replaced ' +
-            'after the new one is downloaded. Without track_id the best recorded candidate is used.',
-        inputSchema: z.object({ file_path: z.string().min(1).max(4096), track_id: numericId.optional(), quality }),
+            'Download a better-quality version of a local file (see list_upgrade_candidates). The old file is deleted ' +
+            'after the new one is downloaded, so this needs confirm=true. Without track_id the best recorded ' +
+            'candidate is used.',
+        inputSchema: z.object({
+            file_path: z.string().min(1).max(4096).describe('Absolute path of the library file to upgrade'),
+            track_id: numericId.optional().describe('Qobuz track id of the upgrade (default: best recorded candidate)'),
+            quality,
+            confirm: z.literal(true).describe('Must be true: the original file is deleted after the upgrade')
+        }),
         annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true }
     }, ({ file_path, track_id, quality: q }) => {
         const item = queueUpgrade({ filePath: file_path, trackId: track_id, quality: q });
@@ -983,9 +1040,14 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
     tool('retag_file_from_qobuz', 'manage', {
         title: 'Fix tags from Qobuz',
         description:
-            'Rewrite all tags and the embedded cover of a local file from a Qobuz track (use list_missing_metadata and ' +
-            'search_catalog to find the matching track). Replaces the existing tags.',
-        inputSchema: z.object({ file_path: z.string().min(1).max(4096), track_id: numericId }),
+            'Rewrite all tags of an indexed FLAC or MP3 library file from a Qobuz track (use list_missing_metadata and ' +
+            'search_catalog to find the matching track). Every existing tag is replaced, so this needs ' +
+            'confirm=true. The embedded cover is replaced by the Qobuz cover when one is fetched, otherwise kept.',
+        inputSchema: z.object({
+            file_path: z.string().min(1).max(4096).describe('Absolute path of the library file'),
+            track_id: numericId.describe('Qobuz track id whose metadata is written'),
+            confirm: z.literal(true).describe('Must be true: all existing tags of the file are overwritten')
+        }),
         annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true }
     }, ({ file_path, track_id }) => retagFileFromQobuz(file_path, track_id));
 
@@ -1054,10 +1116,19 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         title: 'Delete library file',
         description:
             'Delete a music file from disk and remove it from the library index. Only files the app has indexed inside ' +
-            'the library folders can be deleted. Give file_path or library_file_id.',
+            'the library folders can be deleted. Give file_path or library_file_id. For a duplicate pair use ' +
+            'resolve_duplicate instead.',
         inputSchema: z.object({
             file_path: z.string().min(1).max(4096).optional().describe('Absolute path of the library file'),
-            library_file_id: z.number().int().positive().optional().describe('Id from list_duplicates or search_local_library'),
+            library_file_id: z
+                .number()
+                .int()
+                .positive()
+                .optional()
+                .describe(
+                    'library_file_id from search_local_library with source=files, or file_1_library_file_id/' +
+                        'file_2_library_file_id from list_duplicates'
+                ),
             confirm
         }),
         annotations: { ...DESTRUCTIVE, openWorldHint: false }
