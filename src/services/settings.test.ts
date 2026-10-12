@@ -130,6 +130,36 @@ describe('SettingsService', () => {
             expect(encryptionService.encryptSync).not.toHaveBeenCalledWith('from-database');
         });
 
+        it('does not persist the desktop shell port/host into the database', () => {
+            process.env.QBZ_DESKTOP = '1';
+            process.env.DASHBOARD_PORT = '3211';
+            process.env.DASHBOARD_HOST = '127.0.0.1';
+            process.env.DASHBOARD_PASSWORD = 'desktop-pw';
+            try {
+                expect(settings.get('DASHBOARD_PORT')).toBeUndefined();
+                expect(settings.get('DASHBOARD_HOST')).toBeUndefined();
+                const run = vi.mocked(databaseService.getDb().prepare('').run);
+                const writtenKeys = run.mock.calls.map((call) => call[0]);
+                expect(writtenKeys).not.toContain('DASHBOARD_PORT');
+                expect(writtenKeys).not.toContain('DASHBOARD_HOST');
+                // Other keys from the environment still apply.
+                expect(settings.get('DASHBOARD_PASSWORD')).toBe('desktop-pw');
+            } finally {
+                delete process.env.QBZ_DESKTOP;
+                delete process.env.DASHBOARD_PORT;
+                delete process.env.DASHBOARD_HOST;
+            }
+        });
+
+        it('still imports DASHBOARD_PORT/HOST from the environment outside desktop mode', () => {
+            process.env.DASHBOARD_PORT = '8080';
+            try {
+                expect(settings.get('DASHBOARD_PORT')).toBe('8080');
+            } finally {
+                delete process.env.DASHBOARD_PORT;
+            }
+        });
+
         it('should not rewrite the database when env matches the stored value', () => {
             process.env.DASHBOARD_PASSWORD = 'same-value';
             vi.mocked(databaseService.getDb().prepare('').all).mockReturnValueOnce([

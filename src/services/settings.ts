@@ -23,6 +23,15 @@ const SENSITIVE_KEYS = [
  */
 const ENV_ISOLATED_KEYS = ['MCP_TOKEN_HASH', 'MCP_TOKEN_CREATED_AT'];
 
+/**
+ * The Electron shell exports its own loopback port and host for every desktop
+ * start (QBZ_DESKTOP=1); config.ts reads them from the environment in that
+ * mode. They describe that one process, not a user choice, so they must not
+ * be imported into the database: a later headless `npm start` would then
+ * bind 127.0.0.1:3210+ instead of the configured address.
+ */
+const DESKTOP_RUNTIME_KEYS = ['DASHBOARD_PORT', 'DASHBOARD_HOST'];
+
 export const KNOWN_SETTING_KEYS = [
     'QOBUZ_APP_ID',
     'QOBUZ_APP_SECRET',
@@ -130,6 +139,7 @@ export class SettingsService {
             const appliedKeys: string[] = [];
             for (const key of KNOWN_SETTING_KEYS) {
                 if (ENV_ISOLATED_KEYS.includes(key)) continue;
+                if (process.env.QBZ_DESKTOP === '1' && DESKTOP_RUNTIME_KEYS.includes(key)) continue;
                 const value = process.env[key];
                 if (value === undefined || value === '') continue;
                 if (this.cache.get(key)?.value === value) continue;
