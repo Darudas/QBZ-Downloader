@@ -17,6 +17,8 @@ import { tokenManager } from '../../utils/token.js';
 import { printBox } from '../../utils/ui.js';
 import { createMcpEndpoint, createMcpAdminRouter } from '../../mcp/http.js';
 import { isLoopbackHost, setDashboardBoundHost } from './bind-host.js';
+import { getErrorMessage, toSafeErrorPayload } from '../../utils/errors.js';
+import { PasswordGuessLimiter } from './password-guess-limiter.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -83,6 +85,8 @@ export class DashboardService {
     private checkInterval: NodeJS.Timeout | null = null;
     /** The address actually passed to listen(), which start() may downgrade. */
     private boundHost: string = CONFIG.dashboard.host || '127.0.0.1';
+    /** Wrong dashboard passwords per client, across every protected route. */
+    private readonly passwordGuesses = new PasswordGuessLimiter();
 
     constructor(port: number = CONFIG.dashboard.port || 3000) {
         this.port = port;
@@ -226,6 +230,8 @@ export class DashboardService {
             }
 
             const providedPassword = req.headers['x-password'];
+            const presented = typeof providedPassword === 'string' && providedPassword !== '';
+            if (presented && this.rejectIfGuessLimited(req, res)) return;
             if (
                 providedPassword &&
                 typeof providedPassword === 'string' &&
@@ -243,6 +249,7 @@ export class DashboardService {
                 return;
             }
 
+            if (presented) this.passwordGuesses.recordFailure(this.clientKey(req), providedPassword);
             res.status(401).json({ error: 'Invalid password' });
         });
 
@@ -288,6 +295,13 @@ export class DashboardService {
             // Deliberately not accepting the password from the query string: it
             // lands in access logs, Referer headers and browser history.
             const providedPassword = req.headers['x-password'] || readSessionCookie(req);
+            if (
+                typeof providedPassword === 'string' &&
+                providedPassword !== '' &&
+                this.rejectIfGuessLimited(req, res)
+            ) {
+                return;
+            }
 
             if (
                 providedPassword &&
@@ -297,6 +311,9 @@ export class DashboardService {
                 return next();
             }
 
+            if (providedPassword && typeof providedPassword === 'string') {
+                this.passwordGuesses.recordFailure(this.clientKey(req), providedPassword);
+            }
             res.status(401).json({ error: 'Unauthorized: Dashboard password required' });
         });
 
@@ -316,6 +333,22 @@ export class DashboardService {
         });
     }
 
+    private clientKey(req: Request): string {
+        return req.ip || req.socket.remoteAddress || 'unknown';
+    }
+
+    /** Answers 429 (and returns true) when this client used up its password guesses. */
+    private rejectIfGuessLimited(req: Request, res: Response): boolean {
+        const client = this.clientKey(req);
+        if (!this.passwordGuesses.isBlocked(client)) return false;
+        res.setHeader('Retry-After', String(this.passwordGuesses.retryAfterSeconds(client)));
+        res.status(429).json({
+            error: 'Too many authentication attempts, please try again later',
+            code: 'RATE_LIMITED'
+        });
+        return true;
+    }
+
     private setupRoutes(): void {
         this.app.use('/api/mcp', createMcpAdminRouter());
         registerRoutes(this.app);
@@ -329,6 +362,47 @@ export class DashboardService {
             }
             res.sendFile(path.join(__dirname, 'public', 'index.html'));
         });
+
+        this.app.use(DashboardService.jsonErrorHandler);
+    }
+
+    /**
+     * Last-resort error handler: without it Express answers a thrown error or
+     * a malformed JSON body with an HTML page that includes the stack trace.
+     * Body-parser failures keep their 4xx status; everything else goes through
+     * toSafeErrorPayload, so only app errors keep their message.
+     */
+    private static jsonErrorHandler(
+        error: unknown,
+        _req: Request,
+        res: Response,
+        next: NextFunction
+    ): void {
+        if (res.headersSent) {
+            next(error);
+            return;
+        }
+
+        const parserError = error as { type?: unknown; status?: unknown } | null;
+        if (parserError && typeof parserError.type === 'string') {
+            const status = typeof parserError.status === 'number' ? parserError.status : 400;
+            if (status >= 400 && status < 500) {
+                const body =
+                    parserError.type === 'entity.parse.failed'
+                        ? { error: 'Malformed JSON in request body', code: 'INVALID_JSON' }
+                        : parserError.type === 'entity.too.large'
+                          ? { error: 'Request body too large', code: 'PAYLOAD_TOO_LARGE' }
+                          : { error: 'Invalid request body', code: 'INVALID_BODY' };
+                res.status(status).json(body);
+                return;
+            }
+        }
+
+        const payload = toSafeErrorPayload(error);
+        if (payload.statusCode >= 500) {
+            logger.error(`Unhandled request error: ${getErrorMessage(error)}`, 'WEB');
+        }
+        res.status(payload.statusCode).json({ error: payload.message, code: payload.code });
     }
 
     private setupSocket(): void {
