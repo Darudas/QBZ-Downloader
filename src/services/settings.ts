@@ -12,8 +12,16 @@ const SENSITIVE_KEYS = [
     'SPOTIFY_CLIENT_ID',
     'SPOTIFY_CLIENT_SECRET',
     'MEDIA_SERVER_TOKEN',
-    'AI_API_KEY'
+    'AI_API_KEY',
+    'MCP_TOKEN_HASH'
 ];
+
+/**
+ * Keys that must never be copied into or imported from process.env. The MCP
+ * token hash only ever comes from the dashboard's token endpoint; an env
+ * value would silently replace it and child processes would inherit it.
+ */
+const ENV_ISOLATED_KEYS = ['MCP_TOKEN_HASH', 'MCP_TOKEN_CREATED_AT'];
 
 export const KNOWN_SETTING_KEYS = [
     'QOBUZ_APP_ID',
@@ -62,7 +70,11 @@ export const KNOWN_SETTING_KEYS = [
     'UI_ACTIVE_THEME_ID',
     'UI_LANGUAGE',
     'UI_THEME',
-    'UI_ACCENT'
+    'UI_ACCENT',
+    'MCP_ENABLED',
+    'MCP_TOKEN_HASH',
+    'MCP_TOKEN_CREATED_AT',
+    'MCP_PERMISSIONS'
 ] as const;
 
 export type KnownSettingKey = (typeof KNOWN_SETTING_KEYS)[number];
@@ -117,6 +129,7 @@ export class SettingsService {
 
             const appliedKeys: string[] = [];
             for (const key of KNOWN_SETTING_KEYS) {
+                if (ENV_ISOLATED_KEYS.includes(key)) continue;
                 const value = process.env[key];
                 if (value === undefined || value === '') continue;
                 if (this.cache.get(key)?.value === value) continue;
@@ -219,7 +232,7 @@ export class SettingsService {
             ).run(key, valueToStore);
 
             this.cache.set(key, { value, timestamp: Date.now() });
-            process.env[key] = value;
+            if (!ENV_ISOLATED_KEYS.includes(key)) process.env[key] = value;
             eventBus.emit(EVENTS.SETTINGS.UPDATED, { keys: [key] });
         } catch (error: unknown) {
             logger.error(`Failed to save setting ${key}: ${(error as Error).message}`, 'SETTINGS');
@@ -245,7 +258,7 @@ export class SettingsService {
                     const valueToStore = SENSITIVE_KEYS.includes(key) ? encryptionService.encryptSync(value) : value;
                     stmt.run(key, valueToStore);
                     this.cache.set(key, { value, timestamp: Date.now() });
-                    process.env[key] = value;
+                    if (!ENV_ISOLATED_KEYS.includes(key)) process.env[key] = value;
                 }
             });
 

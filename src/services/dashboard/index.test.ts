@@ -60,6 +60,11 @@ vi.mock('./routes.js', () => ({
     registerRoutes: vi.fn()
 }));
 
+vi.mock('../../mcp/http.js', async () => {
+    const { Router } = await import('express');
+    return { createMcpEndpoint: () => Router(), createMcpAdminRouter: () => Router() };
+});
+
 import { AddressInfo } from 'net';
 import { Server } from 'http';
 import request from 'supertest';

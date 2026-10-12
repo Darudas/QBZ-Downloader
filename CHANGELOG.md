@@ -6,6 +6,12 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- **AI control over MCP**: `/mcp` (Streamable HTTP) on the dashboard server plus a `qbz-mcp` stdio
+  bridge. 41 tools let an assistant search Qobuz, manage favorites and playlists, download
+  tracks/albums/playlists/artists/labels/favorites/URLs, and control the queue. MCP is off by default.
+  Access needs a bearer token that is stored only as a hash and is required in every mode. Permission
+  groups decide which tools are offered; destructive tools are opt-in and need `confirm: true`.
+  Setup: `docs/mcp.md`.
 - **Qobuz library API layer** (groundwork for favorites, your own playlists, purchases and
   discovery in the dashboard and over MCP). `qobuzLibraryService` (`src/services/qobuz-library/`)
   lists, checks, adds and removes favorites; lists, creates, updates and deletes your playlists and

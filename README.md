@@ -50,6 +50,7 @@ QBZ-Downloader transforms the way you curate your local music library. Every fea
 | **🔍 Quality Analysis** | A built-in spectral scanner detects upsampled or fake lossless files, so you always know the true provenance of your audio. |
 | **📡 Media Server Integration** | After a download completes, the app can automatically notify Plex or Jellyfin to rescan the library — your music appears in your media server immediately. |
 | **📤 Automatic Format Conversion** | Optionally convert downloaded FLAC files to MP3, AAC, or Opus for portable devices. The conversion runs automatically after every download. |
+| **🤖 AI Control (MCP)** | Let Claude, Open WebUI, n8n or Cursor search Qobuz, manage your favorites and playlists and start downloads through the built-in MCP server (token-protected, off by default). See [docs/mcp.md](docs/mcp.md). |
 | **👀 Playlist Watcher** | Subscribe to any Qobuz playlist and the app will monitor it for new tracks, downloading them as soon as they appear. |
 
 ---

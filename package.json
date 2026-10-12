@@ -4,6 +4,9 @@
   "description": "Desktop-first Qobuz downloader EXE with Hi-Res audio, metadata automation, and lyrics support",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "qbz-mcp": "dist/mcp/bridge.js"
+  },
   "type": "module",
   "files": [
     "dist",

@@ -15,6 +15,7 @@ import { libraryScannerService } from '../library-scanner/index.js';
 import { notificationService } from '../notifications.js';
 import { tokenManager } from '../../utils/token.js';
 import { printBox } from '../../utils/ui.js';
+import { createMcpEndpoint, createMcpAdminRouter } from '../../mcp/http.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -183,6 +184,10 @@ export class DashboardService {
             );
             next();
         });
+        // MCP has its own bearer auth, limits and 1 MB parser, so it is mounted
+        // before the global body parser and outside the password middleware.
+        this.app.use('/mcp', createMcpEndpoint());
+
         this.app.use(express.json({ limit: '10mb' }));
         this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -311,6 +316,7 @@ export class DashboardService {
     }
 
     private setupRoutes(): void {
+        this.app.use('/api/mcp', createMcpAdminRouter());
         registerRoutes(this.app);
 
         this.app.get(/.*/, (req: Request, res: Response) => {

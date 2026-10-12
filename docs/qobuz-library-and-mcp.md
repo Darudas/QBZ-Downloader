@@ -11,7 +11,8 @@ This document is the working plan for two connected features:
 It also records security problems found in the existing code that had to be fixed before an AI is
 allowed to control the app.
 
-> **Status (current branch):** phase A is partly done. The Qobuz API layer, the Qobuz library service and
+> **Status (current branch):** the MCP server (B2, core tool set) is implemented, tested and documented
+> in [`docs/mcp.md`](mcp.md); phase A is partly done. The Qobuz API layer, the Qobuz library service and
 > the queue/download safety work are implemented and tested; everything else below is planned. See
 > [Status](#status) for the exact list.
 
@@ -242,6 +243,29 @@ Conventions for every tool:
   (it was broken by the queue fix above).
 - `normalizeDownloadQuality` is a strict whitelist (`ALLOWED_QUALITIES` = 5, 6, 7, 27; `max`/`min`
   aliases). Anything else falls back to the default instead of reaching `getFileUrl`.
+
+**B2: MCP server (core done)**
+- `src/mcp/server.ts`: 41 tools across the groups read/library/download/manage/destructive,
+  registered per request according to `MCP_PERMISSIONS`. Destructive tools need `confirm: true`. The
+  handler wrapper sanitizes errors and audit-logs calls by name.
+- `src/mcp/http.ts`: the `/mcp` endpoint, with a rate limit, a 404 while disabled, a foreign-Origin
+  reject, bearer auth plus an auth-failure limiter, and a 1 MB parser. It also holds the admin routes
+  `GET /api/mcp/status`, `POST /api/mcp/config`, `POST`/`DELETE /api/mcp/token` (behind the dashboard
+  password).
+- `src/mcp/token.ts`: the token is hashed (`MCP_TOKEN_HASH`) and compared in constant time. The
+  `QBZ_MCP_TOKEN` env override is supported. The MCP keys are registered in settings, and the hash is
+  never mirrored to or imported from `process.env`.
+- `src/mcp/bridge.ts` with `"bin": {"qbz-mcp": "dist/mcp/bridge.js"}`.
+- Tests (`src/mcp/mcp.test.ts`) use a real MCP client over HTTP and cover the 404, 401 and foreign-Origin
+  responses, tool gating per group, `confirm`, and tool calls.
+- **Still open in B2:**
+  - tools that depend on A3/B1 services: `check_in_library`, `search_local_library`, duplicates,
+    upgrades, metadata edits, smart playlists, safe settings read/write, notifications,
+    `download_purchases`, `download_lyrics`;
+  - resources and prompts;
+  - a Host-header check for loopback binds;
+  - a bridge end-to-end test.
+- **UI still missing:** the MCP section in Settings. For now enable MCP with `curl` (see `docs/mcp.md`).
 
 **Verification:** `npx tsc --noEmit` passes, lint has 0 errors, 384 backend tests pass (272 before), and
 82 client tests pass. The client typecheck passes.
