@@ -68,12 +68,28 @@ vi.mock('../services/history.js', () => ({
 }));
 vi.mock('../services/library-scanner/index.js', () => ({
     libraryScannerService: {
-        isScanInProgress: () => false
+        isScanInProgress: vi.fn(() => false),
+        abortScan: vi.fn()
+    }
+}));
+vi.mock('../services/LibraryStatisticsService.js', () => ({
+    libraryStatisticsService: {
+        getLibraryStats: async () => ({
+            totalTracks: 3,
+            totalAlbums: 1,
+            totalArtists: 1,
+            totalSize: 300,
+            qualityDistribution: { 'Hi-Res': 3 },
+            genreDistribution: Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`g${i}`, i])),
+            activity: []
+        })
     }
 }));
 const actions = vi.hoisted(() => ({
     resolveDuplicate: vi.fn(),
-    queueUpgrade: vi.fn()
+    queueUpgrade: vi.fn(),
+    deleteLibraryFile: vi.fn(),
+    editTrackMetadata: vi.fn()
 }));
 // Containment and deletion are covered by library-actions.test.ts; here only
 // the tool wiring is checked.
@@ -251,6 +267,46 @@ describe('MCP endpoint', () => {
         const refused = await client.callTool({ name: 'resolve_duplicate', arguments: { duplicate_id: 3, confirm: true } });
         expect(refused.isError).toBe(true);
         expect(JSON.stringify(refused.content)).toContain('outside the managed library folders');
+        await client.close();
+    });
+
+    it('runs the library stats, scan abort, tag edit and file delete tools', async () => {
+        state.settings.set('MCP_PERMISSIONS', 'library,download,manage,destructive');
+        const client = await connect(await newToken());
+        const call = (name: string, args: Record<string, unknown> = {}) => client.callTool({ name, arguments: args });
+
+        const stats = await call('get_library_stats');
+        const data = stats.structuredContent as { total_tracks: number; top_genres: Record<string, number> };
+        expect(data.total_tracks).toBe(3);
+        expect(Object.keys(data.top_genres)).toHaveLength(25);
+        expect(data.top_genres.g29).toBe(29);
+
+        expect((await call('abort_library_scan')).structuredContent).toMatchObject({ stopped: false });
+        const { libraryScannerService } = await import('../services/library-scanner/index.js');
+        vi.mocked(libraryScannerService.isScanInProgress).mockReturnValueOnce(true);
+        expect((await call('abort_library_scan')).structuredContent).toEqual({ stopped: true });
+        expect(libraryScannerService.abortScan).toHaveBeenCalledTimes(1);
+
+        actions.editTrackMetadata.mockResolvedValueOnce({ filePath: '/music/a.flac', updated: ['title', 'albumArtist'] });
+        await call('edit_track_metadata', { file_path: '/music/a.flac', title: 'New', album_artist: 'Band', track_number: '3' });
+        expect(actions.editTrackMetadata).toHaveBeenCalledWith('/music/a.flac', { title: 'New', albumArtist: 'Band', trackNumber: '3' });
+
+        expect((await call('delete_library_file', { file_path: '/music/a.flac' })).isError).toBe(true);
+        expect(actions.deleteLibraryFile).not.toHaveBeenCalled();
+        expect((await call('delete_library_file', { confirm: true })).isError).toBe(true);
+        actions.deleteLibraryFile.mockReturnValueOnce({ filePath: '/music/a.flac', deleted: true, removedRows: { libraryFiles: 1, tracks: 1 } });
+        const deleted = await call('delete_library_file', { library_file_id: 7, confirm: true });
+        expect(deleted.isError).toBeFalsy();
+        expect(actions.deleteLibraryFile).toHaveBeenCalledWith({ filePath: undefined, libraryFileId: 7 });
+        await client.close();
+    });
+
+    it('hides delete_library_file without the destructive group', async () => {
+        state.settings.set('MCP_PERMISSIONS', 'library,download,manage');
+        const client = await connect(await newToken());
+        const names = (await client.listTools()).tools.map((t) => t.name);
+        expect(names).toEqual(expect.arrayContaining(['get_library_stats', 'abort_library_scan', 'edit_track_metadata']));
+        expect(names).not.toContain('delete_library_file');
         await client.close();
     });
 

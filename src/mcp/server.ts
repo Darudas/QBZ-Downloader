@@ -29,7 +29,8 @@ import { databaseService } from '../services/database/index.js';
 import { historyService } from '../services/history.js';
 import { libraryScannerService } from '../services/library-scanner/index.js';
 import { playlistWatcherService } from '../services/PlaylistWatcherService.js';
-import { queueUpgrade, resolveDuplicate } from '../services/library-actions.js';
+import { deleteLibraryFile, editTrackMetadata, queueUpgrade, resolveDuplicate } from '../services/library-actions.js';
+import { libraryStatisticsService } from '../services/LibraryStatisticsService.js';
 import { retagFileFromQobuz } from '../services/metadata-repair.js';
 import { checkAlbums, checkTracks, isTrackInLibrary, searchLocalLibrary } from '../services/library-lookup.js';
 import {
@@ -514,6 +515,26 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         annotations: READ_LOCAL
     }, () => libraryScannerService.getScanStats());
 
+    tool('get_library_stats', 'read', {
+        title: 'Library statistics',
+        description: 'Totals of the local library (tracks, albums, artists, size), quality distribution and the 25 most common genres.',
+        inputSchema: z.object({}),
+        annotations: READ_LOCAL
+    }, async () => {
+        const stats = await libraryStatisticsService.getLibraryStats();
+        const genres = Object.entries(stats.genreDistribution)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 25);
+        return {
+            total_tracks: stats.totalTracks,
+            total_albums: stats.totalAlbums,
+            total_artists: stats.totalArtists,
+            total_size_bytes: stats.totalSize,
+            quality_distribution: stats.qualityDistribution,
+            top_genres: Object.fromEntries(genres)
+        };
+    });
+
     /* ------------------------ local library ----------------------- */
 
     tool('check_in_library', 'read', {
@@ -802,6 +823,51 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         return { started: true };
     });
 
+    tool('abort_library_scan', 'manage', {
+        title: 'Stop library scan',
+        description: 'Stop a running library scan. Files already scanned stay indexed.',
+        inputSchema: z.object({}),
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+    }, () => {
+        if (!libraryScannerService.isScanInProgress()) return { stopped: false, reason: 'No scan is running' };
+        libraryScannerService.abortScan();
+        return { stopped: true };
+    });
+
+    tool('edit_track_metadata', 'manage', {
+        title: 'Edit track tags',
+        description:
+            'Change single tags of a FLAC or MP3 file in the library. Other tags and the embedded cover are kept. ' +
+            'An empty string removes that tag. Use search_local_library to find the file_path.',
+        inputSchema: z.object({
+            file_path: z.string().min(1).max(4096).describe('Absolute path of the library file'),
+            title: z.string().max(500).optional().describe('Track title'),
+            artist: z.string().max(500).optional().describe('Track artist'),
+            album: z.string().max(500).optional().describe('Album title'),
+            album_artist: z.string().max(500).optional().describe('Album artist'),
+            genre: z.string().max(200).optional().describe('Genre'),
+            year: z.string().max(10).optional().describe('YYYY or YYYY-MM-DD'),
+            track_number: z.string().max(4).optional().describe('Track number'),
+            total_tracks: z.string().max(4).optional().describe('Number of tracks on the disc'),
+            disc_number: z.string().max(4).optional().describe('Disc number'),
+            total_discs: z.string().max(4).optional().describe('Number of discs'),
+            composer: z.string().max(500).optional().describe('Composer'),
+            label: z.string().max(500).optional().describe('Record label'),
+            isrc: z.string().max(12).optional().describe('ISRC code'),
+            copyright: z.string().max(1000).optional().describe('Copyright notice'),
+            comment: z.string().max(4000).optional().describe('Comment')
+        }),
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+    }, ({ file_path, album_artist, track_number, total_tracks, disc_number, total_discs, ...rest }) =>
+        editTrackMetadata(file_path, {
+            ...rest,
+            ...(album_artist !== undefined ? { albumArtist: album_artist } : {}),
+            ...(track_number !== undefined ? { trackNumber: track_number } : {}),
+            ...(total_tracks !== undefined ? { totalTracks: total_tracks } : {}),
+            ...(disc_number !== undefined ? { discNumber: disc_number } : {}),
+            ...(total_discs !== undefined ? { totalDiscs: total_discs } : {})
+        }));
+
     tool('watch_playlist', 'manage', {
         title: 'Watch playlist',
         description: 'Watch a Qobuz playlist and download new tracks automatically every interval_hours.',
@@ -983,6 +1049,24 @@ export function buildMcpServer(groups: ReadonlyArray<McpPermissionGroup>): McpSe
         }),
         annotations: { ...DESTRUCTIVE, openWorldHint: false }
     }, ({ duplicate_id, keep, dry_run }) => resolveDuplicate(duplicate_id, { keep, dryRun: dry_run }));
+
+    tool('delete_library_file', 'destructive', {
+        title: 'Delete library file',
+        description:
+            'Delete a music file from disk and remove it from the library index. Only files the app has indexed inside ' +
+            'the library folders can be deleted. Give file_path or library_file_id.',
+        inputSchema: z.object({
+            file_path: z.string().min(1).max(4096).optional().describe('Absolute path of the library file'),
+            library_file_id: z.number().int().positive().optional().describe('Id from list_duplicates or search_local_library'),
+            confirm
+        }),
+        annotations: { ...DESTRUCTIVE, openWorldHint: false }
+    }, ({ file_path, library_file_id }) => {
+        if (file_path === undefined && library_file_id === undefined) {
+            throw new ValidationError('Provide file_path or library_file_id');
+        }
+        return deleteLibraryFile({ filePath: file_path, libraryFileId: library_file_id });
+    });
 
     return server;
 }
