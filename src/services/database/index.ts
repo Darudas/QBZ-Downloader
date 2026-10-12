@@ -3,9 +3,9 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { logger } from '../../utils/logger.js';
+import { getDataDir } from '../../utils/data-dir.js';
 
 const DB_VERSION = 13;
-const DEFAULT_DB_PATH = path.resolve(process.cwd(), 'data', 'qbz.db');
 
 /**
  * `%` and `_` are wildcards inside a LIKE pattern. A search for "100_" or a
@@ -101,8 +101,9 @@ export class DatabaseService {
     private dbPath: string;
     private initialized = false;
 
+    /** Without a path the database lives in the app data directory (see utils/data-dir.ts), resolved on first use. */
     constructor(dbPath?: string) {
-        this.dbPath = dbPath || DEFAULT_DB_PATH;
+        this.dbPath = dbPath || '';
     }
 
     private createMigrationBackup(targetVersion: number): void {
@@ -136,6 +137,7 @@ export class DatabaseService {
         if (this.initialized) return;
 
         try {
+            if (!this.dbPath) this.dbPath = path.join(getDataDir(), 'qbz.db');
             const isMemory = this.dbPath === ':memory:';
             const absolutePath = isMemory ? ':memory:' : path.resolve(this.dbPath);
             

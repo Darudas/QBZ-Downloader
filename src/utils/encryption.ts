@@ -1,10 +1,19 @@
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { getDataDir } from './data-dir.js';
 
 const ALGORITHM = 'aes-256-cbc';
-const ENCRYPTION_KEY_FILE = path.join(process.cwd(), 'data', '.secret.key');
 const IV_LENGTH = 16;
+
+/**
+ * The key lives next to the database it protects (see data-dir.ts). It used
+ * to be `<cwd>/data/.secret.key`, so a start from another directory made a
+ * new key and the stored credentials came back as ciphertext.
+ */
+export function getEncryptionKeyPath(): string {
+    return path.join(getDataDir(), '.secret.key');
+}
 
 interface ElectronSafeStorage {
     isEncryptionAvailable: () => boolean;
@@ -32,6 +41,7 @@ let ENCRYPTION_KEY: Buffer | null = null;
 function getOrGenerateKey(): Buffer {
     if (ENCRYPTION_KEY) return ENCRYPTION_KEY;
 
+    const ENCRYPTION_KEY_FILE = getEncryptionKeyPath();
     if (fs.existsSync(ENCRYPTION_KEY_FILE)) {
         try {
             const keyHex = fs.readFileSync(ENCRYPTION_KEY_FILE, 'utf8').trim();
@@ -93,8 +103,21 @@ function decryptSync(text: string): string {
         decrypted = Buffer.concat([decrypted, decipher.final()]);
         return decrypted.toString();
     } catch {
+        if (isEncryptedSync(text)) warnKeyMismatch();
         return text;
     }
+}
+
+let keyMismatchWarned = false;
+/** A value that looks encrypted but does not decrypt means the key file is not the one it was written with. */
+function warnKeyMismatch(): void {
+    if (keyMismatchWarned) return;
+    keyMismatchWarned = true;
+    console.error(
+        `Stored credentials could not be decrypted with the key at ${getEncryptionKeyPath()}. ` +
+            'The key does not belong to this database; restore the original .secret.key next to qbz.db ' +
+            'or re-enter the credentials.'
+    );
 }
 
 function isEncryptedSync(text: string): boolean {
