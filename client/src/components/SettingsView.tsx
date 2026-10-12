@@ -417,9 +417,13 @@ export const SettingsView: React.FC = () => {
             showToast('Theme name is required', 'error');
             return;
         }
-        await saveTheme(themeName, isDarkTheme, themeColors);
-        setIsEditingTheme(false);
-        showToast('Theme saved', 'success');
+        try {
+            await saveTheme(themeName, isDarkTheme, themeColors);
+            setIsEditingTheme(false);
+            showToast('Theme saved', 'success');
+        } catch (error) {
+            showToast(error instanceof Error ? error.message : 'Failed to save theme', 'error');
+        }
     };
 
     const updateColor = (key: string, value: string) => {
@@ -1258,7 +1262,9 @@ export const SettingsView: React.FC = () => {
                 cancelText="Cancel"
                 onConfirm={() => {
                     if (showDeleteThemeConfirm) {
-                        deleteTheme(showDeleteThemeConfirm);
+                        deleteTheme(showDeleteThemeConfirm).catch((error: unknown) =>
+                            showToast(error instanceof Error ? error.message : 'Failed to delete theme', 'error')
+                        );
                         setShowDeleteThemeConfirm(null);
                     }
                 }}

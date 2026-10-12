@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { smartFetch } from '../utils/api';
+import { apiJson, smartFetch } from '../utils/api';
 import { useNavigation } from '../contexts/NavigationContext';
 import { useToast } from '../contexts/ToastContext';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -7,11 +7,13 @@ import { useQueueActions } from '../hooks/useQueueActions';
 import { playTrack } from './Player';
 import { Icons } from './Icons';
 import { FavoriteButton } from './FavoriteButton';
+import { ArtistDiscography, SimilarArtistsRow } from './ArtistSections';
 import type { ArtistData } from '../types/qobuz';
+import type { QobuzArtistItem } from '../utils/qobuzItems';
 
 
 export const ArtistDetailView: React.FC = () => {
-    const { navData, setActiveTab, navigate } = useNavigation();
+    const { navData, setActiveTab, navigate, goBack } = useNavigation();
     const { t } = useLanguage();
     const { showToast } = useToast();
     const { addToQueue, addToBatchStaging } = useQueueActions();
@@ -54,14 +56,10 @@ export const ArtistDetailView: React.FC = () => {
 
     const downloadLyrics = async (trackId: string) => {
         try {
-            await smartFetch('/api/lyrics/download', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ trackId })
-            });
+            await apiJson('/api/lyrics/download', { method: 'POST', body: { trackId } });
             showToast('Lyrics download queued', 'success');
         } catch (e) {
-            showToast('Failed to start lyrics download', 'error');
+            showToast(e instanceof Error ? e.message : 'Failed to start lyrics download', 'error');
         }
     };
 
@@ -126,8 +124,8 @@ export const ArtistDetailView: React.FC = () => {
 
     return (
         <div id="view-artist" className="view-section" style={{ display: 'block', paddingBottom: '100px' }}>
-            <button className="btn secondary" onClick={() => setActiveTab('search')} style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Icons.ArrowLeft width={16} height={16} /> Back
+            <button className="btn secondary" onClick={() => goBack('search')} style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Icons.ArrowLeft width={16} height={16} /> {t('action_back')}
             </button>
 
             <div className="artist-header" style={{ display: 'flex', gap: '24px', marginBottom: '40px', alignItems: 'flex-start', flexWrap: 'wrap' }}>
@@ -420,22 +418,12 @@ export const ArtistDetailView: React.FC = () => {
                 </div>
             )}
 
-            {artist.similar_artists?.items && artist.similar_artists.items.length > 0 && (
-                <div style={{ marginBottom: '20px' }}>
-                    <h2 style={{ marginBottom: '20px', fontSize: '24px', borderBottom: '1px solid var(--border)', paddingBottom: '10px' }}>Similar Artists</h2>
-                    <div className="track-list">
-                        {artist.similar_artists.items.map(sim => (
-                            <div key={sim.id} className="track-item" onClick={() => navigate('artist', { id: String(sim.id) })} style={{ cursor: 'pointer' }}>
-                                <img src={sim.image?.small || (sim.image as any)?.thumbnail || ''} style={{ width: '40px', height: '40px', borderRadius: '50%', marginRight: '16px', objectFit: 'cover' }} loading="lazy" />
-                                <div style={{ flex: 1, fontWeight: '500' }}>{sim.name}</div>
-                                <div className="track-actions">
-                                    <button className="btn-track-dl" style={{ fontSize: '12px', padding: '4px 12px' }}>View</button>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            )}
+            <ArtistDiscography artistId={String(artist.id)} />
+
+            <SimilarArtistsRow
+                artistId={String(artist.id)}
+                fallback={(artist.similar_artists?.items ?? []) as QobuzArtistItem[]}
+            />
         </div>
     );
 };

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { smartFetch } from '../utils/api';
+import { apiJson, smartFetch } from '../utils/api';
 import { useSocket } from '../contexts/SocketContext';
 import { useToast } from '../contexts/ToastContext';
 import { useLanguage } from '../contexts/LanguageContext';
@@ -278,7 +278,12 @@ export const LibraryView: React.FC = () => {
     };
 
     const deleteSmartPlaylist = async (id: string) => {
-        await smartFetch(`/api/library/smart-playlists/${id}`, { method: 'DELETE' });
+        try {
+            await apiJson(`/api/library/smart-playlists/${id}`, { method: 'DELETE' });
+        } catch (e) {
+            showToast(e instanceof Error ? e.message : 'Failed to delete playlist', 'error');
+            return;
+        }
         if (selectedSmart?.id === id) { setSelectedSmart(null); setSmartTracks([]); }
         loadSmartPlaylists();
     };
@@ -345,21 +350,21 @@ export const LibraryView: React.FC = () => {
     const startScan = async () => {
         try {
             setScanning(true);
-            await smartFetch('/api/library/scan', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({})
-            });
+            await apiJson('/api/library/scan', { method: 'POST', body: {} });
             showToast('Scan started', 'success');
         } catch (e) {
             setScanning(false);
-            showToast('Error starting scan', 'error');
+            showToast(e instanceof Error ? e.message : 'Error starting scan', 'error');
         }
     };
 
     const abortScan = async () => {
-        await smartFetch('/api/library/scan/abort', { method: 'POST' });
-        showToast('Stopping scan...', 'info');
+        try {
+            await apiJson('/api/library/scan/abort', { method: 'POST' });
+            showToast('Stopping scan...', 'info');
+        } catch (e) {
+            showToast(e instanceof Error ? e.message : 'Could not stop the scan', 'error');
+        }
     };
 
     const resolveDuplicate = async (id: number) => {

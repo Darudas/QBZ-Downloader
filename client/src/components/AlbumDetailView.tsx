@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { smartFetch } from '../utils/api';
+import { apiJson, smartFetch } from '../utils/api';
 import { useNavigation } from '../contexts/NavigationContext';
 import { playTrack } from './Player';
 import { useToast } from '../contexts/ToastContext';
@@ -29,14 +29,20 @@ interface AlbumData {
     track_count: number;
     genre?: { name: string };
     release_date_original?: string;
-    label?: { name: string };
+    label?: { id?: string | number; name: string };
     maximum_bit_depth?: number;
     maximum_sampling_rate?: number;
     hires?: boolean;
 }
 
+interface BatchImportResult {
+    imported: number;
+    failed: number;
+    errors?: string[];
+}
+
 export const AlbumDetailView: React.FC = () => {
-    const { navData, setActiveTab } = useNavigation();
+    const { navData, setActiveTab, navigate, goBack } = useNavigation();
     const { showToast } = useToast();
     const { t } = useLanguage();
     const { addToQueue, addToBatchStaging } = useQueueActions();
@@ -89,14 +95,22 @@ export const AlbumDetailView: React.FC = () => {
                 const urls = album.tracks.items.map(t => `https://open.qobuz.com/track/${t.id}`);
                 showToast(`Starting album ZIP download...`, 'info');
                 try {
-                    await smartFetch('/api/batch/import/direct', {
+                    const result = await apiJson<BatchImportResult>('/api/batch/import/direct', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ urls, createZip: true })
+                        body: { urls, createZip: true }
                     });
-                    showToast('Album download started (ZIP)', 'success');
+                    if (result.imported > 0) {
+                        showToast(
+                            result.failed > 0
+                                ? `Album download started (ZIP): ${result.imported} queued, ${result.failed} failed`
+                                : 'Album download started (ZIP)',
+                            result.failed > 0 ? 'info' : 'success'
+                        );
+                    } else {
+                        showToast(result.errors?.[0] || 'Failed to start album download', 'error');
+                    }
                 } catch (e) {
-                    showToast('Failed to start album download', 'error');
+                    showToast(e instanceof Error ? e.message : 'Failed to start album download', 'error');
                 }
             } else if (await addToQueue('album', album.id) && album) {
                 setQueuedTrackIds(prev => {
@@ -128,35 +142,35 @@ export const AlbumDetailView: React.FC = () => {
                     showToast('Failed to request lyrics ZIP', 'error');
                 }
             } else {
-                showToast(`Starting lyrics download for ${album.tracks.items.length} tracks...`, 'info');
+                const tracks = album.tracks.items;
+                showToast(`Starting lyrics download for ${tracks.length} tracks...`, 'info');
                 let successCount = 0;
-                for (const track of album.tracks.items) {
+                for (const track of tracks) {
                     try {
-                        await smartFetch('/api/lyrics/download', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ trackId: track.id })
-                        });
+                        await apiJson('/api/lyrics/download', { method: 'POST', body: { trackId: track.id } });
                         successCount++;
                     } catch (e) {
-                        console.error(`Failed to trigger lyrics for ${track.id}`);
+                        console.error(`Failed to fetch lyrics for ${track.id}`, e);
                     }
                 }
-                showToast(`Lyrics download finished.`, 'success');
+                if (successCount === 0) {
+                    showToast('No lyrics found for this album', 'error');
+                } else {
+                    showToast(
+                        `Lyrics found for ${successCount}/${tracks.length} tracks`,
+                        successCount === tracks.length ? 'success' : 'info'
+                    );
+                }
             }
         }
     };
 
     const downloadTrackLyrics = async (trackId: string) => {
         try {
-            await smartFetch('/api/lyrics/download', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ trackId })
-            });
+            await apiJson('/api/lyrics/download', { method: 'POST', body: { trackId } });
             showToast('Lyrics download queued', 'success');
         } catch (e) {
-            showToast('Failed to start lyrics download', 'error');
+            showToast(e instanceof Error ? e.message : 'Failed to start lyrics download', 'error');
         }
     };
 
@@ -214,8 +228,8 @@ export const AlbumDetailView: React.FC = () => {
 
     return (
         <div id="view-album" className="view-section" style={{ display: 'block' }}>
-            <button className="btn secondary" onClick={() => setActiveTab('search')} style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                <Icons.ArrowLeft width={16} height={16} /> Back to Search
+            <button className="btn secondary" onClick={() => goBack('search')} style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <Icons.ArrowLeft width={16} height={16} /> {t('action_back')}
             </button>
             <div id="album-full-content">
                 <div className="album-header">
@@ -229,7 +243,18 @@ export const AlbumDetailView: React.FC = () => {
                         <div className="album-header-meta">
                             {album.genre?.name} • {album.release_date_original} • {album.tracks?.items?.length} Tracks • {Math.floor(album.duration / 60)} mins
                             <br />
-                            {album.label?.name}
+                            {album.label?.id ? (
+                                <button
+                                    type="button"
+                                    onClick={() => navigate('label', { id: String(album.label!.id) })}
+                                    title={t('action_open_label')}
+                                    style={{ background: 'none', border: 'none', padding: 0, color: 'inherit', font: 'inherit', cursor: 'pointer', textDecoration: 'underline', textUnderlineOffset: 3 }}
+                                >
+                                    {album.label.name}
+                                </button>
+                            ) : (
+                                album.label?.name
+                            )}
                         </div>
                         <div style={{ marginTop: '20px', display: 'flex', gap: '12px' }}>
                             <button className="btn primary" onClick={() => openDownloadModal('album')} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>

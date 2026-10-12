@@ -6,14 +6,17 @@ const mocks = vi.hoisted(() => ({
   smartFetch: vi.fn(),
   showToast: vi.fn(),
   setActiveTab: vi.fn(),
+  navigate: vi.fn(),
+  goBack: vi.fn(),
   addToStaging: vi.fn(),
   settings: {} as Record<string, unknown>,
   navData: null as { id: string } | null,
 }));
 
-vi.mock('../../utils/api', () => ({
-  smartFetch: mocks.smartFetch,
-}));
+vi.mock('../../utils/api', async () => {
+  const { apiJsonVia } = await import('../../test-utils/apiMock');
+  return { smartFetch: mocks.smartFetch, apiJson: apiJsonVia(mocks.smartFetch) };
+});
 
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ showToast: mocks.showToast }),
@@ -27,6 +30,8 @@ vi.mock('../../contexts/NavigationContext', () => ({
   useNavigation: () => ({
     navData: mocks.navData,
     setActiveTab: mocks.setActiveTab,
+    navigate: mocks.navigate,
+    goBack: mocks.goBack,
   }),
 }));
 
@@ -153,6 +158,82 @@ describe('AlbumDetailView', () => {
         method: 'POST', body: JSON.stringify({ type: 'album', id: 'a1' }),
       }));
     });
+  });
+
+  it('opens the label page from the label name', async () => {
+    mocks.smartFetch.mockResolvedValue(mockResponse({ ...albumData, label: { id: 42, name: 'Test Label' } }));
+    render(<AlbumDetailView />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Test Label' }));
+    expect(mocks.navigate).toHaveBeenCalledWith('label', { id: '42' });
+  });
+
+  it('shows a label without id as plain text', async () => {
+    mocks.smartFetch.mockResolvedValue(mockResponse(albumData));
+    render(<AlbumDetailView />);
+    expect(await screen.findByText(/Test Label/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Test Label' })).not.toBeInTheDocument();
+  });
+
+  it('goes back to the previous view', async () => {
+    mocks.smartFetch.mockResolvedValue(mockResponse(albumData));
+    render(<AlbumDetailView />);
+    fireEvent.click(await screen.findByText('action_back'));
+    expect(mocks.goBack).toHaveBeenCalledWith('search');
+  });
+
+  const openAlbumModal = async () => {
+    render(<AlbumDetailView />);
+    await screen.findByText('Track One');
+    const dlBtn = screen.getAllByRole('button').find(b => b.textContent?.includes('action_download') && b.textContent?.includes('Album'));
+    fireEvent.click(dlBtn!);
+  };
+
+  it('reports a failed ZIP download instead of success', async () => {
+    mocks.smartFetch.mockImplementation(async (url: string) =>
+      url === '/api/batch/import/direct'
+        ? mockResponse({ error: 'Missing credentials' }, false)
+        : mockResponse(albumData)
+    );
+    await openAlbumModal();
+    fireEvent.click(screen.getByText('Download as ZIP'));
+    await waitFor(() => expect(mocks.showToast).toHaveBeenCalledWith('Missing credentials', 'error'));
+    expect(mocks.showToast).not.toHaveBeenCalledWith('Album download started (ZIP)', 'success');
+  });
+
+  it('reports a ZIP import that queued nothing as an error', async () => {
+    mocks.smartFetch.mockImplementation(async (url: string) =>
+      url === '/api/batch/import/direct'
+        ? mockResponse({ success: false, imported: 0, failed: 2, errors: ['Track 1 unavailable'] })
+        : mockResponse(albumData)
+    );
+    await openAlbumModal();
+    fireEvent.click(screen.getByText('Download as ZIP'));
+    await waitFor(() => expect(mocks.showToast).toHaveBeenCalledWith('Track 1 unavailable', 'error'));
+  });
+
+  it('starts a ZIP download when tracks were queued', async () => {
+    mocks.smartFetch.mockImplementation(async (url: string) =>
+      url === '/api/batch/import/direct'
+        ? mockResponse({ success: true, imported: 2, failed: 0, errors: [] })
+        : mockResponse(albumData)
+    );
+    await openAlbumModal();
+    fireEvent.click(screen.getByText('Download as ZIP'));
+    await waitFor(() => expect(mocks.showToast).toHaveBeenCalledWith('Album download started (ZIP)', 'success'));
+  });
+
+  it('counts only lyrics that were actually found', async () => {
+    mocks.smartFetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url === '/api/lyrics/download') {
+        const { trackId } = JSON.parse(String(init?.body));
+        return trackId === 't1' ? mockResponse({ success: true }) : mockResponse({ error: 'Lyrics not found' }, false);
+      }
+      return mockResponse(albumData);
+    });
+    render(<AlbumDetailView />);
+    fireEvent.click(await screen.findByText(/All Lyrics/));
+    fireEvent.click(screen.getByText('Separate Files'));
+    await waitFor(() => expect(mocks.showToast).toHaveBeenCalledWith('Lyrics found for 1/2 tracks', 'info'));
   });
 
   it('fetches album on mount with navData.id', async () => {

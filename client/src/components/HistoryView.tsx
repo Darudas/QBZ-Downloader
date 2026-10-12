@@ -127,6 +127,8 @@ export const HistoryView: React.FC = () => {
             if (res && res.ok) {
                 showToast('History cleared', 'success');
                 fetchHistory();
+            } else {
+                showToast('Failed to clear history', 'error');
             }
         } catch (e) {
             showToast('Failed to clear history', 'error');

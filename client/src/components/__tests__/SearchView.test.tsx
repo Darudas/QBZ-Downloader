@@ -12,9 +12,10 @@ const mocks = vi.hoisted(() => ({
   setSearchState: vi.fn(),
 }));
 
-vi.mock('../../utils/api', () => ({
-  smartFetch: mocks.smartFetch,
-}));
+vi.mock('../../utils/api', async () => {
+  const { apiJsonVia } = await import('../../test-utils/apiMock');
+  return { smartFetch: mocks.smartFetch, apiJson: apiJsonVia(mocks.smartFetch) };
+});
 
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ showToast: mocks.showToast }),
