@@ -296,6 +296,7 @@
     "mcp_copied": "Disalin",
     "mcp_copy_failed": "Gagal menyalin, pilih teks secara manual",
     "mcp_save_failed": "Gagal menyimpan pengaturan MCP",
+    "mcp_revoke_failed": "Gagal mencabut token",
     "mcp_more_clients": "Open WebUI, n8n, dan Cursor: lihat docs/mcp.md di repositori.",
     "msg_favorites_sync_saved": "Unduh otomatis favorit disimpan",
     "msg_favorites_sync_baseline": "Titik awal dicatat: favorit yang ditambahkan mulai sekarang akan diunduh",

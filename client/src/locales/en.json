@@ -190,6 +190,7 @@
     "mcp_copied": "Copied",
     "mcp_copy_failed": "Copy failed, select the text manually",
     "mcp_save_failed": "Could not save MCP settings",
+    "mcp_revoke_failed": "Could not revoke the token",
     "mcp_more_clients": "Open WebUI, n8n and Cursor: see docs/mcp.md in the repository.",
     "action_back": "Back",
     "action_close": "Close",

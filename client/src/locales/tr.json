@@ -292,6 +292,7 @@
     "mcp_copied": "Kopyalandı",
     "mcp_copy_failed": "Kopyalanamadı, metni elle seçin",
     "mcp_save_failed": "MCP ayarları kaydedilemedi",
+    "mcp_revoke_failed": "Token iptal edilemedi",
     "mcp_more_clients": "Open WebUI, n8n ve Cursor: depodaki docs/mcp.md dosyasına bakın.",
     "label_upgrade_options": "seçenek",
     "label_match": "Eşleşme",

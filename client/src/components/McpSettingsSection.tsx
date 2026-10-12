@@ -57,42 +57,55 @@ export function McpSettingsSection() {
         return () => setFreshToken(null);
     }, []);
 
+    /** Reads a JSON body without throwing on an empty or broken one. */
+    const readJson = async (res: Response): Promise<unknown> => res.json().catch(() => null);
+
     const saveConfig = async (patch: { enabled?: boolean; permissions?: string[] }) => {
         setBusy(true);
-        const res = await smartFetch('/api/mcp/config', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(patch)
-        });
-        setBusy(false);
-        if (res && res.ok) {
-            const data: unknown = await res.json();
+        try {
+            const res = await smartFetch('/api/mcp/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(patch)
+            });
+            const data = res && res.ok ? await readJson(res) : null;
             if (isStatus(data)) setStatus(data);
-        } else {
-            showToast(t('mcp_save_failed'), 'error');
+            else showToast(t('mcp_save_failed'), 'error');
+        } finally {
+            setBusy(false);
         }
     };
 
     const generate = async () => {
         if (status?.token.configured && !window.confirm(t('mcp_rotate_confirm'))) return;
         setBusy(true);
-        const res = await smartFetch('/api/mcp/token', { method: 'POST' });
-        setBusy(false);
-        if (res && res.ok) {
-            const data = (await res.json()) as { token?: unknown };
-            if (typeof data.token === 'string') setFreshToken(data.token);
-            void load();
-        } else {
-            showToast(t('mcp_save_failed'), 'error');
+        try {
+            const res = await smartFetch('/api/mcp/token', { method: 'POST' });
+            const data = res && res.ok ? ((await readJson(res)) as { token?: unknown } | null) : null;
+            if (typeof data?.token === 'string') {
+                setFreshToken(data.token);
+                void load();
+            } else {
+                showToast(t('mcp_save_failed'), 'error');
+            }
+        } finally {
+            setBusy(false);
         }
     };
 
     const revoke = async () => {
         if (!window.confirm(t('mcp_revoke_confirm'))) return;
-        const res = await smartFetch('/api/mcp/token', { method: 'DELETE' });
-        if (res && res.ok) {
-            setFreshToken(null);
-            void load();
+        setBusy(true);
+        try {
+            const res = await smartFetch('/api/mcp/token', { method: 'DELETE' });
+            if (res && res.ok) {
+                setFreshToken(null);
+                void load();
+            } else {
+                showToast(t('mcp_revoke_failed'), 'error');
+            }
+        } finally {
+            setBusy(false);
         }
     };
 

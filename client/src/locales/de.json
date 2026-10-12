@@ -186,6 +186,7 @@
     "mcp_copied": "Kopiert",
     "mcp_copy_failed": "Kopieren fehlgeschlagen, bitte manuell markieren",
     "mcp_save_failed": "MCP-Einstellungen konnten nicht gespeichert werden",
+    "mcp_revoke_failed": "Token konnte nicht widerrufen werden",
     "mcp_more_clients": "Open WebUI, n8n und Cursor: siehe docs/mcp.md im Repository.",
     "action_back": "Zurück",
     "action_close": "Schließen",

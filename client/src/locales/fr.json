@@ -292,6 +292,7 @@
     "mcp_copied": "Copié",
     "mcp_copy_failed": "Échec de la copie, sélectionnez le texte manuellement",
     "mcp_save_failed": "Impossible d'enregistrer les réglages MCP",
+    "mcp_revoke_failed": "Impossible de révoquer le jeton",
     "mcp_more_clients": "Open WebUI, n8n et Cursor : voir docs/mcp.md dans le dépôt.",
     "label_upgrade_options": "options",
     "label_match": "Correspondance",

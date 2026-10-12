@@ -292,6 +292,7 @@
     "mcp_copied": "Copiado",
     "mcp_copy_failed": "No se pudo copiar, selecciona el texto manualmente",
     "mcp_save_failed": "No se pudieron guardar los ajustes de MCP",
+    "mcp_revoke_failed": "No se pudo revocar el token",
     "mcp_more_clients": "Open WebUI, n8n y Cursor: consulta docs/mcp.md en el repositorio.",
     "label_upgrade_options": "opciones",
     "label_match": "Coincidencia",

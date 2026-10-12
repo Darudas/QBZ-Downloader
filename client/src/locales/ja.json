@@ -292,6 +292,7 @@
     "mcp_copied": "コピーしました",
     "mcp_copy_failed": "コピーに失敗しました。テキストを手動で選択してください",
     "mcp_save_failed": "MCP 設定を保存できませんでした",
+    "mcp_revoke_failed": "トークンを取り消せませんでした",
     "mcp_more_clients": "Open WebUI、n8n、Cursor については、リポジトリの docs/mcp.md を参照してください。",
     "label_upgrade_options": "件の候補",
     "label_match": "一致度",

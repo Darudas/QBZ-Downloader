@@ -292,6 +292,7 @@
     "mcp_copied": "कॉपी हो गया",
     "mcp_copy_failed": "कॉपी नहीं हो सका, टेक्स्ट को स्वयं चुनें",
     "mcp_save_failed": "MCP सेटिंग्स सहेजी नहीं जा सकीं",
+    "mcp_revoke_failed": "टोकन रद्द नहीं किया जा सका",
     "mcp_more_clients": "Open WebUI, n8n और Cursor: रिपॉज़िटरी में docs/mcp.md देखें।",
     "label_upgrade_options": "विकल्प",
     "label_match": "मिलान",

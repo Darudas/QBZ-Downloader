@@ -292,6 +292,7 @@
     "mcp_copied": "已复制",
     "mcp_copy_failed": "复制失败，请手动选择文本",
     "mcp_save_failed": "无法保存 MCP 设置",
+    "mcp_revoke_failed": "无法撤销令牌",
     "mcp_more_clients": "Open WebUI、n8n 和 Cursor：请参阅仓库中的 docs/mcp.md。",
     "label_upgrade_options": "个选项",
     "label_match": "匹配度",
