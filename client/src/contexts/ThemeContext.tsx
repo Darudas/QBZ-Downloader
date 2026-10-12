@@ -110,7 +110,9 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     /** Throws (ApiError) when the server refuses, so callers can report it. */
     const deleteTheme = async (id: string) => {
-        await apiJson(`/api/themes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        const result = await apiJson<{ success?: boolean } | null>(`/api/themes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+        // The server answers 200 { success: false } for an unknown theme.
+        if (result?.success === false) throw new Error('Theme not found');
         setThemes(prev => prev.filter(t => t.id !== id));
         if (currentTheme.id === id) {
             resetTheme();

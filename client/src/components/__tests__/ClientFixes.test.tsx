@@ -87,11 +87,12 @@ describe('ThemeContext', () => {
     const HASH = 'a'.repeat(64);
 
     const ThemeProbe = ({ onError }: { onError: (err: unknown) => void }) => {
-        const { themes, saveTheme } = useTheme();
+        const { themes, saveTheme, deleteTheme } = useTheme();
         return (
             <div>
                 <span data-testid="count">{themes.length}</span>
                 <button onClick={() => saveTheme('Mine', true, {}).catch(onError)}>save</button>
+                <button onClick={() => deleteTheme('t1').catch(onError)}>delete</button>
             </div>
         );
     };
@@ -126,5 +127,40 @@ describe('ThemeContext', () => {
         await waitFor(() => expect(onError).toHaveBeenCalled());
         expect((onError.mock.calls[0][0] as Error).message).toBe('Missing parameters');
         expect(screen.getByTestId('count').textContent).toBe('0');
+    });
+
+    it('treats { success: false } from the delete route as a failure', async () => {
+        mockFetchRoutes({
+            'GET /api/themes': () => [{ id: 't1', name: 'Mine', is_dark: true, colors: {} }],
+            'DELETE /api/themes/t1': () => ({ success: false })
+        });
+        const onError = vi.fn();
+        render(
+            <ThemeProvider>
+                <ThemeProbe onError={onError} />
+            </ThemeProvider>
+        );
+        await waitFor(() => expect(screen.getByTestId('count').textContent).toBe('1'));
+        fireEvent.click(screen.getByText('delete'));
+        await waitFor(() => expect(onError).toHaveBeenCalled());
+        expect((onError.mock.calls[0][0] as Error).message).toBe('Theme not found');
+        expect(screen.getByTestId('count').textContent).toBe('1');
+    });
+
+    it('removes a theme the server deleted', async () => {
+        mockFetchRoutes({
+            'GET /api/themes': () => [{ id: 't1', name: 'Mine', is_dark: true, colors: {} }],
+            'DELETE /api/themes/t1': () => ({ success: true })
+        });
+        const onError = vi.fn();
+        render(
+            <ThemeProvider>
+                <ThemeProbe onError={onError} />
+            </ThemeProvider>
+        );
+        await waitFor(() => expect(screen.getByTestId('count').textContent).toBe('1'));
+        fireEvent.click(screen.getByText('delete'));
+        await waitFor(() => expect(screen.getByTestId('count').textContent).toBe('0'));
+        expect(onError).not.toHaveBeenCalled();
     });
 });
