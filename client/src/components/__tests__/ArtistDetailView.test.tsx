@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ArtistDetailView } from '../ArtistDetailView';
+import { ArtistListView } from '../ArtistListView';
 
 const mocks = vi.hoisted(() => ({
   smartFetch: vi.fn(),
@@ -215,5 +216,21 @@ describe('ArtistDetailView', () => {
     await waitFor(() => {
       expect(mocks.smartFetch).toHaveBeenCalledWith('/api/artist/123?limit=20');
     });
+  });
+});
+
+describe('ArtistListView', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.navData = { id: '42' };
+    mocks.smartFetch.mockResolvedValue(mockResponse({ name: 'Band', tracks: { items: [], total: 0 } }));
+  });
+
+  it('goes back through history instead of pushing the artist again', async () => {
+    render(<ArtistListView />);
+    await waitFor(() => expect(mocks.smartFetch).toHaveBeenCalled());
+    fireEvent.click(screen.getByLabelText('Back to Artist'));
+    expect(mocks.goBack).toHaveBeenCalledWith('artist', { id: '42' });
+    expect(mocks.navigate).not.toHaveBeenCalled();
   });
 });

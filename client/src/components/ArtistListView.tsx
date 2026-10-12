@@ -20,7 +20,7 @@ interface ListItem {
 }
 
 export const ArtistListView: React.FC = () => {
-    const { navData, navigate, activeTab } = useNavigation();
+    const { navData, navigate, goBack, activeTab } = useNavigation();
     const { t } = useLanguage();
     const { showToast } = useToast();
     const { addToQueue, addToBatchStaging } = useQueueActions();
@@ -77,7 +77,13 @@ export const ArtistListView: React.FC = () => {
     return (
         <div className="view-section" style={{ display: 'block' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '16px', marginBottom: '24px' }}>
-                <button className="btn secondary icon-btn" onClick={() => navigate('artist', { id: artistId })} title="Back to Artist">
+                <button
+                    className="btn secondary icon-btn"
+                    // Back through history like the artist page itself, so Back never loops artist <-> list.
+                    onClick={() => (artistId ? goBack('artist', { id: String(artistId) }) : goBack('search'))}
+                    title="Back to Artist"
+                    aria-label="Back to Artist"
+                >
                     <Icons.ArrowLeft width={18} height={18} />
                 </button>
                 <div>
