@@ -444,6 +444,11 @@ export class QobuzAPI {
         payload: QobuzRequestPayload = {},
         options: QobuzRequestOptions = {}
     ): Promise<AxiosResponse<T>> {
+        // Without an app id Qobuz rejects every call after the retries; fail
+        // fast with a message that says what to do instead.
+        if (!this.appId) {
+            throw new AuthenticationError('Qobuz is not set up yet. Add your Qobuz credentials in Settings first.');
+        }
         const policy = options.retry ?? 'idempotent';
         const maxRetries = Math.max(0, CONFIG.download.retryAttempts ?? 3);
 

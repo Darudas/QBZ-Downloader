@@ -503,6 +503,20 @@ describe('QobuzAPI getFileUrl format_id=1 handling', () => {
     });
 });
 
+describe('QobuzAPI without an app id', () => {
+    beforeEach(() => {
+        vi.clearAllMocks();
+        mockGet.mockReset();
+    });
+
+    it('fails fast with a setup hint instead of calling Qobuz', async () => {
+        const api = new QobuzAPI();
+        Object.defineProperty(api, 'appId', { get: () => '' });
+        await expect(api.getTrack('track-1')).rejects.toThrow('Add your Qobuz credentials');
+        expect(mockGet).not.toHaveBeenCalled();
+    });
+});
+
 describe('QobuzAPI transport', () => {
     beforeEach(() => {
         vi.useFakeTimers();
