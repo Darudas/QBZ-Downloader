@@ -136,8 +136,7 @@ export class HistoryService {
     }
 
     getSorted(limit?: number): Array<{ id: string } & HistoryEntry> {
-        // getHistorySorted interpolates the limit into the SQL text, so only a
-        // positive integer may reach it.
+        // Anything but a positive integer means "all entries".
         const safeLimit =
             typeof limit === 'number' && Number.isInteger(limit) && limit > 0 ? limit : undefined;
         return databaseService.getHistorySorted(safeLimit) as unknown as Array<{ id: string } & HistoryEntry>;

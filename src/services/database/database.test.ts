@@ -44,7 +44,7 @@ describe('DatabaseService', () => {
         it('should store and retrieve database version', () => {
             const db = dbService.getDb();
             const version = db.prepare("SELECT value FROM meta WHERE key = 'db_version'").get();
-            expect(version.value).toBe('12');
+            expect(version.value).toBe('13');
         });
 
         it('should create a same-directory backup before migrating a file database', () => {
@@ -154,7 +154,7 @@ describe('DatabaseService', () => {
                 .get() as { value: string };
             migratedDb.close();
 
-            expect(version.value).toBe('12');
+            expect(version.value).toBe('13');
             expect(columns.some((column) => column.name === 'quality_scan_result')).toBe(true);
             expect(columns.some((column) => column.name === 'quality_scanned_at')).toBe(true);
 
@@ -286,6 +286,119 @@ describe('DatabaseService', () => {
             const items = dbService.getQueueItems();
             expect(items[0].status).toBe('downloading');
             expect(items[0].progress).toBe(50);
+        });
+    });
+    describe('Lookup indexes (v13)', () => {
+        it('creates the lookup indexes', () => {
+            const names = (
+                dbService.getDb().prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[]
+            ).map((row) => row.name);
+            expect(names).toEqual(
+                expect.arrayContaining([
+                    'idx_tracks_isrc',
+                    'idx_tracks_album_id',
+                    'idx_tracks_file_path',
+                    'idx_library_track_id',
+                    'idx_queue_items_status'
+                ])
+            );
+        });
+
+        it('upgrades a v12 database to v13 and adds the indexes', () => {
+            dbService.close();
+            const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'qbz-db-v13-'));
+            const dbPath = path.join(tempDir, 'qbz.db');
+            const first = new DatabaseService(dbPath);
+            first.initialize();
+            const raw = first.getDb();
+            raw.exec('DROP INDEX idx_tracks_isrc; DROP INDEX idx_queue_items_status');
+            raw.prepare("UPDATE meta SET value = '12' WHERE key = 'db_version'").run();
+            first.close();
+
+            const migrated = new DatabaseService(dbPath);
+            try {
+                migrated.initialize();
+                const db = migrated.getDb();
+                const version = db.prepare("SELECT value FROM meta WHERE key = 'db_version'").get() as { value: string };
+                expect(version.value).toBe('13');
+                const names = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[]).map(
+                    (row) => row.name
+                );
+                expect(names).toEqual(expect.arrayContaining(['idx_tracks_isrc', 'idx_queue_items_status']));
+            } finally {
+                migrated.close();
+                fs.rmSync(tempDir, { recursive: true, force: true });
+            }
+            dbService = new DatabaseService(':memory:');
+            dbService.initialize();
+        });
+    });
+
+    describe('Paged lookups', () => {
+        beforeEach(() => {
+            dbService.addTrack({ id: '1', title: 'Alpha 100%', artist: 'Band', album: 'First', album_id: 'alb1', file_path: '/m/a.flac', downloaded_at: '2024-01-01T00:00:00.000Z' });
+            dbService.addTrack({ id: '2', title: 'Beta', artist: 'Band', album: 'First', album_id: 'alb1', file_path: '/m/b.flac', downloaded_at: '2024-01-02T00:00:00.000Z' });
+            dbService.addTrack({ id: '3', title: 'Gamma', artist: 'Other', album: 'Second', album_id: 'alb2', file_path: '/m/c.flac', downloaded_at: '2024-01-03T00:00:00.000Z' });
+        });
+
+        it('searchTracksPaged returns a page plus the total', () => {
+            const page = dbService.searchTracksPaged('band', { limit: 1, offset: 0 });
+            expect(page.total).toBe(2);
+            expect(page.items.map((t) => t.id)).toEqual(['2']);
+            expect(dbService.searchTracksPaged('band', { limit: 1, offset: 1 }).items.map((t) => t.id)).toEqual(['1']);
+        });
+
+        it('searchTracksPaged treats LIKE wildcards literally and clamps paging', () => {
+            expect(dbService.searchTracksPaged('100%').items.map((t) => t.id)).toEqual(['1']);
+            expect(dbService.searchTracksPaged('%').total).toBe(1);
+            const page = dbService.searchTracksPaged('', { limit: -1, offset: -5 });
+            expect(page.limit).toBe(25);
+            expect(page.offset).toBe(0);
+            expect(dbService.searchTracksPaged('', { limit: 100000 }).limit).toBe(500);
+        });
+
+        it('getTracksByAlbumId, getTracksByIds and getTrackByPath', () => {
+            expect(dbService.getTracksByAlbumId('alb1').map((t) => t.id).sort()).toEqual(['1', '2']);
+            expect(dbService.getTracksByIds(['3', '1', 'x']).map((t) => t.id).sort()).toEqual(['1', '3']);
+            expect(dbService.getTracksByIds([])).toEqual([]);
+            expect(dbService.getTrackByPath('/m/c.flac')?.id).toBe('3');
+        });
+
+        it('searchLibraryFiles and getLibraryFileById', () => {
+            dbService.addLibraryFile({ file_path: '/m/x/one.flac', title: 'One', artist: 'Band', album: 'First' });
+            dbService.addLibraryFile({ file_path: '/m/y/two.flac', title: 'Two', artist: 'Solo', album: 'Else' });
+            const page = dbService.searchLibraryFiles('band');
+            expect(page.total).toBe(1);
+            const row = page.items[0] as { id: number; file_path: string };
+            expect(row.file_path).toBe('/m/x/one.flac');
+            expect(dbService.getLibraryFileById(row.id)?.title).toBe('One');
+            expect(dbService.searchLibraryFiles('/m/y/').total).toBe(1);
+            expect(dbService.getLibraryFileById(99999)).toBeUndefined();
+        });
+
+        it('updates tag columns for a file path only', () => {
+            dbService.addLibraryFile({ file_path: '/m/a.flac', title: 'Alpha', artist: 'Band' });
+            expect(dbService.updateTrackTagsByPath('/m/a.flac', { title: 'New', genre: 'Jazz' })).toBe(1);
+            expect(dbService.getTrack('1')?.title).toBe('New');
+            expect(dbService.getTrack('1')?.genre).toBe('Jazz');
+            expect(dbService.getTrack('2')?.title).toBe('Beta');
+            expect(dbService.updateLibraryFileTags('/m/a.flac', { album: 'Renamed', file_size: 42 })).toBe(1);
+            const lib = dbService.getLibraryFileByPath('/m/a.flac') as { album: string; file_size: number; title: string };
+            expect(lib.album).toBe('Renamed');
+            expect(lib.file_size).toBe(42);
+            expect(lib.title).toBe('Alpha');
+            expect(dbService.updateTrackTagsByPath('/m/a.flac', {})).toBe(0);
+        });
+    });
+
+    describe('History', () => {
+        it('getHistorySorted binds its limit', () => {
+            dbService.addHistoryEntry('1', { title: 'A', filename: 'a', downloadedAt: '2024-01-01T00:00:00Z' });
+            dbService.addHistoryEntry('2', { title: 'B', filename: 'b', downloadedAt: '2024-01-02T00:00:00Z' });
+            expect(dbService.getHistorySorted(1).map((r) => r.id)).toEqual(['2']);
+            expect(dbService.getHistorySorted().length).toBe(2);
+            expect(dbService.getHistorySorted(1.5 as number).length).toBe(2);
+            expect(dbService.getHistorySorted('1; DROP TABLE history' as unknown as number).length).toBe(2);
         });
     });
 });
